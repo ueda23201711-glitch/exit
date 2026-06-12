@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>8番出口</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000;overflow:hidden;font-family:'MS Gothic','Courier New',monospace;}
+canvas{display:block;position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:0;}
+#overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);}
+#overlay h1{color:#fff;font-size:2.8em;margin-bottom:16px;letter-spacing:0.15em;}
+#overlay p{color:#ccc;font-size:1em;margin:6px 0;text-align:center;}
+#startBtn{margin-top:28px;padding:14px 48px;font-size:1.2em;background:#222;color:#fff;border:2px solid #fff;cursor:pointer;letter-spacing:0.1em;}
+#startBtn:hover{background:#444;}
+#exitCounter{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);color:#fff;font-size:1.4em;letter-spacing:0.2em;text-shadow:0 0 8px #000;z-index:50;display:none;}
+#winScreen,#loseScreen{position:fixed;top:0;left:0;width:100%;height:100%;z-index:80;display:none;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.92);}
+#winScreen h2{color:#ffff00;font-size:3em;margin-bottom:20px;}
+#loseScreen h2{color:#ff4444;font-size:3em;margin-bottom:20px;}
+.endBtn{margin-top:20px;padding:12px 40px;font-size:1.1em;background:#222;color:#fff;border:2px solid #fff;cursor:pointer;}
+.endBtn:hover{background:#444;}
+#crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,0.45);font-size:22px;z-index:50;pointer-events:none;display:none;}
+#fadeOverlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:75;opacity:0;pointer-events:none;}
+
+/* ── Mobile virtual controls ── */
+#mobileControls{position:fixed;bottom:0;left:0;width:100%;height:200px;z-index:55;pointer-events:none;display:none;}
+#joystickZone{position:absolute;left:18px;bottom:20px;width:130px;height:130px;pointer-events:all;touch-action:none;}
+#joystickBase{position:absolute;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,0.10);border:2px solid rgba(255,255,255,0.28);}
+#joystickKnob{position:absolute;width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,0.40);border:2px solid rgba(255,255,255,0.55);top:39px;left:39px;transition:none;}
+#lookZone{position:absolute;right:0;bottom:0;width:calc(100% - 175px);height:200px;pointer-events:all;touch-action:none;}
+#mobileHint{position:absolute;left:175px;bottom:165px;color:rgba(255,255,255,0.35);font-size:0.75em;pointer-events:none;}
+</style>
+</head>
+<body>
+<div id="overlay">
+  <h1>8番出口</h1>
+  <p>地下通路を歩いてください。</p>
+  <p>異変を感じたら引き返してください。</p>
+  <p>異変がなければ、そのまま出口から出てください。</p>
+  <p id="instrText" style="margin-top:14px;color:#888;font-size:0.85em;">マウス：視点　W/S：前後　A/D：左右</p>
+  <button id="startBtn">ゲームを始める</button>
+</div>
+<div id="mobileControls">
+  <div id="joystickZone"><div id="joystickBase"><div id="joystickKnob"></div></div></div>
+  <div id="lookZone"></div>
+  <div id="mobileHint">← 移動　　視点 →</div>
+</div>
+<div id="crosshair">+</div>
+<div id="fadeOverlay"></div>
+<div id="exitCounter">出口： 0 / 8</div>
+<div id="winScreen">
+  <h2>脱出成功</h2>
+  <p style="color:#fff;font-size:1.1em;">8番出口を見つけました。</p>
+  <button class="endBtn" onclick="location.reload()">もう一度</button>
+</div>
+<div id="loseScreen">
+  <h2>迷子</h2>
+  <p style="color:#fff;font-size:1.1em;">出口を見失いました。</p>
+  <button class="endBtn" onclick="location.reload()">もう一度</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/meshoptimizer@0.18.1/meshopt_decoder.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
+<script>
+'use strict';
+// ── Mobile detection ──────────────────────────────────
+const isMobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||('ontouchstart' in window&&navigator.maxTouchPoints>1);
+// Virtual joystick state
+let joyActive=false,joyId=-1,joyOriX=0,joyOriY=0,joyDX=0,joyDY=0;
+const JOY_MAX=42;
+// Look-drag state
+let lookActive=false,lookId=-1,lookPX=0,lookPY=0;
+// ── CONSTANTS ──────────────────────────────────────────
+const CW=4.4,HW=CW/2,CH=3.0;
+const MAIN_Z_NEAR=0.9;
+const MAIN_Z_FAR=-30;
+const CONN_Z_FAR=-34.4;
+const EXIT_Z_FAR=-38.8;
+const MAIN_X_R=+HW;
+const MAIN_X_L=-HW;
+const CONN_X_FAR=-(HW+CW);
+const EXIT_X_FAR=-(HW+2*CW);
+const TP_Z=-36.0,TP_X=-6.8;
+// Backward S-bend constants (immediate – S-bend starts right behind player)
+const B_CONN_Z_FAR=MAIN_Z_NEAR+CW;      // +5.3
+const B_EXIT_Z_FAR=B_CONN_Z_FAR+CW;     // +9.7  (前方EXIT_Z_FARと対称: コネクタ+CW)
+const B_EXT_Z_FAR =B_EXIT_Z_FAR+32.0;   // +41.7 (フォグキャップ)
+const B_CONN_X_FAR=MAIN_X_R+CW;         // +6.6
+const B_EXIT_X_FAR=MAIN_X_R+2*CW;       // +11.0
+const B_TP_Z=B_CONN_Z_FAR+2.0;          // +7.3
+const B_TP_X=B_CONN_X_FAR+0.3;          // +6.9
+// ── NPC WAYPOINT PATH ────────────────────────────────────
+// 誘導ブロックラインに沿ったS字ループ経路
+// 前方S字(fwdExX=-9.9, Z_TURN_F=-31.1) → メイン通路(x=-1.1) → 後方S字(bwdExX=+9.9, Z_TURN_B=+2.0)
+const NPC_PATH=[
+  {x:-3.1, z:-31.1},  // WP0: スポーン位置（S字コーナー直前・壁の死角）
+  {x:-3.1, z:-31.1},  // WP1: 前方S字コーナー（+Z→+X折れ曲がり点）
+  {x: 1.1, z:-31.1},  // WP2: 前方S字コーナー（+X→+Z 出口・メイン通路入口）右側
+  {x: 1.1, z:  2.0},  // WP3: 後方S字コーナー（+Z→+X折れ曲がり点）右側
+  {x: 9.9, z:  2.0},  // WP4: 後方S字コーナー（+X→+Z 出口）
+  {x: 9.9, z: 13.0},  // WP5: 消滅位置（B_EXIT_Z_FAR通過後の延伸セクション内）
+];
+const NPC_SPEED=1.6;  // m/s
+const PH=1.65,PSPEED=4.5,MAX_EXITS=8;
+
+// ── STATE ──────────────────────────────────────────────
+let scene,camera,renderer,clock;
+let animRunning=false,keys={},yaw=0,pitch=0,playerPos;
+let exitCount=0,currentAnomaly=null,gameOver=false;
+let headBob=0,headBobT=0;
+let npcGroup=null,npcWalkT=0,npcNatX=0,npcSideOff=0,npcSideTgt=0,npcWpIdx=1;
+let mixer=null;
+let npcSpotLight=null;
+let gltfCache=null; // プリロード済みGLTFデータ
+let gameStarted=false; // ゲーム開始フラグ（プリロード完了後のNPC配置判定用）
+let posterMeshes=[],doorMeshes=[];
+let _normalPosterTex2=null;
+let sceneLights=[],origIntensities=[];
+let flickerActive=false,flickerTimer=0;
+
+const overlay=document.getElementById('overlay');
+const crosshair=document.getElementById('crosshair');
+const exitCounter=document.getElementById('exitCounter');
+const winScreen=document.getElementById('winScreen');
+const loseScreen=document.getElementById('loseScreen');
+
+// ── TEXTURES ──────────────────────────────────────────
+// WALL_TILE = 0.15m square tiles (15cm – finer tile matching real Exit 8)
+const WALL_TILE=0.15, FLOOR_TILE=0.30;
+const WALL_ATLAS=8; // 8×8タイルアトラス（各タイルに色差・汚れ・ベベル）
+function makeWallTex(rBias,gBias,bBias,seedStart){
+  // 8×8タイルアトラス：各タイルに色差・汚れ・ベベル立体感を付与
+  const TS=128, N=WALL_ATLAS, S=N*TS;
+  const cv=document.createElement('canvas');cv.width=S;cv.height=S;
+  const c=cv.getContext('2d');
+  const GW=4;  // 目地幅(px)
+  const BW=4;  // ベベル幅(px)
+
+  // シンプルなseed付き疑似乱数（毎回同じパターン）
+  rBias=rBias||0;gBias=gBias||0;bBias=bBias||0;
+  let seed=seedStart!=null?seedStart:42;
+  function rnd(){seed=(seed*1664525+1013904223)&0xffffffff;return(seed>>>0)/0xffffffff;}
+
+  for(let ty=0;ty<N;ty++){
+    for(let tx=0;tx<N;tx++){
+      const px=tx*TS, py=ty*TS;
+
+      // ── 目地（背景を全部グラウトで塗る）──
+      c.fillStyle='#1c1a18';
+      c.fillRect(px,py,TS,TS);
+
+      // ── タイル本体（セラミックタイルの個体差・中程度）──
+      const v=rnd();
+      const base=225+Math.floor(v*18); // 225〜243: 中程度の明度差
+      let tR=base,tG=base,tB=base;
+      const roll=rnd();
+      if(roll<0.18){                  // 18%: 温かみ（ごく薄いクリーム）
+        const a=Math.floor(rnd()*7)+2;
+        tR=Math.min(255,base+a);
+        tG=Math.min(255,base+Math.floor(a*0.2));
+        tB=Math.max(190,base-Math.floor(a*0.7));
+      }else if(roll<0.30){            // 12%: ひんやり感（ごく薄い青白）
+        const a=Math.floor(rnd()*5)+2;
+        tR=Math.max(190,base-Math.floor(a*0.4));
+        tG=Math.min(255,base);
+        tB=Math.min(255,base+a);
+      }else if(roll<0.38){            // 8%: わずかにくすんだ
+        const a=Math.floor(rnd()*9)+3;
+        tR=Math.max(185,base-a);
+        tG=Math.max(185,base-a+Math.floor(rnd()*3));
+        tB=Math.max(185,base-a);
+      }                               // 62%: ニュートラル
+      const r=Math.min(255,Math.max(0,tR+rBias));
+      const g=Math.min(255,Math.max(0,tG+gBias));
+      const b=Math.min(255,Math.max(0,tB+bBias));
+      c.fillStyle=`rgb(${r},${g},${b})`;
+      c.fillRect(px+GW,py+GW,TS-GW*2,TS-GW*2);
+
+      // ── ベベル：上・左エッジ明（出っ張りの光当たり面）──
+      c.fillStyle='rgba(255,255,255,0.52)';
+      c.fillRect(px+GW,     py+GW,      TS-GW*2, BW); // 上
+      c.fillRect(px+GW,     py+GW,      BW, TS-GW*2); // 左
+
+      // ── ベベル：下・右エッジ暗（出っ張りの影面）──
+      c.fillStyle='rgba(0,0,0,0.32)';
+      c.fillRect(px+GW,     py+TS-GW-BW, TS-GW*2, BW); // 下
+      c.fillRect(px+TS-GW-BW,py+GW,      BW, TS-GW*2); // 右
+
+      // ── 光沢ハイライト（対角グラデ）──
+      const grd=c.createLinearGradient(px,py,px+TS*0.65,py+TS*0.65);
+      grd.addColorStop(0,'rgba(255,255,255,0.34)');
+      grd.addColorStop(0.45,'rgba(255,255,255,0.10)');
+      grd.addColorStop(1,'rgba(255,255,255,0.01)');
+      c.fillStyle=grd;
+      c.fillRect(px+GW+BW,py+GW+BW,TS-GW*2-BW*2,TS-GW*2-BW*2);
+
+      // ── 汚れ・染み（確率で追加）──
+      if(rnd()>0.91){
+        const sx=px+GW+BW+rnd()*(TS-GW*2-BW*4);
+        const sy=py+GW+BW+rnd()*(TS-GW*2-BW*4);
+        const sr=1.5+rnd()*3;
+        const alpha=0.02+rnd()*0.04;
+        const isBrown=rnd()>0.5;
+        c.fillStyle=isBrown?`rgba(155,125,85,${alpha})`:`rgba(110,110,110,${alpha})`;
+        c.beginPath();
+        c.ellipse(sx,sy,sr*(0.5+rnd()),sr*(0.5+rnd()),rnd()*Math.PI,0,Math.PI*2);
+        c.fill();
+      }
+    }
+  }
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;return t;
+}
+function makeFloorTex(){
+  // Canvas = exactly ONE tile (30cm square floor tile)
+  const cv=document.createElement('canvas');cv.width=128;cv.height=128;
+  const x=cv.getContext('2d');
+  x.fillStyle='#d0cec8';x.fillRect(0,0,128,128);
+  x.strokeStyle='#7a7670';x.lineWidth=5;
+  x.strokeRect(2.5,2.5,123,123);
+  // Slight surface variation
+  const grd=x.createLinearGradient(0,0,128,128);
+  grd.addColorStop(0,'rgba(255,255,255,0.12)');
+  grd.addColorStop(1,'rgba(0,0,0,0.06)');
+  x.fillStyle=grd;x.fillRect(5,5,118,118);
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;return t;
+}
+function makeCeilTex(){
+  // Horizontal strip ceiling panels – real Exit 8 style
+  // Canvas represents one panel: wide (120cm) x short (30cm)
+  // Horizontal repeat = many panels across width; vertical = one panel deep
+  const cv=document.createElement('canvas');cv.width=256;cv.height=64;
+  const x=cv.getContext('2d');
+  // Panel base – slightly warm white
+  x.fillStyle='#dce0e4';x.fillRect(0,0,256,64);
+  // Top & bottom thin seam lines (where panels meet)
+  x.fillStyle='#a0a4a8';
+  x.fillRect(0,0,256,3);   // top seam
+  x.fillRect(0,61,256,3);  // bottom seam
+  // Subtle longitudinal highlight across middle of panel
+  const grd=x.createLinearGradient(0,3,0,61);
+  grd.addColorStop(0,'rgba(255,255,255,0.18)');
+  grd.addColorStop(0.5,'rgba(255,255,255,0.28)');
+  grd.addColorStop(1,'rgba(255,255,255,0.10)');
+  x.fillStyle=grd;x.fillRect(0,3,256,58);
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;return t;
+}
+// CEIL_TILE_W × CEIL_TILE_H: panel is 1.2m wide (cross-corridor) × 0.30m deep (along corridor)
+const CEIL_TILE_W=1.2, CEIL_TILE_H=0.30;
+const CEIL_TILE=CEIL_TILE_H; // kept for legacy reference
+function drawPoodle(ctx,cx,cy,bodyC,fluffC,darkC){
+  ctx.fillStyle=bodyC;
+  ctx.beginPath();ctx.ellipse(cx,cy+8,12,10,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=fluffC;
+  [[-8,2],[-4,-4],[0,-7],[4,-4],[8,2],[-10,8],[10,8]].forEach(([dx,dy])=>{
+    ctx.beginPath();ctx.arc(cx+dx,cy+dy+8,6,0,Math.PI*2);ctx.fill();
+  });
+  ctx.fillStyle=bodyC;
+  ctx.beginPath();ctx.arc(cx,cy-12,10,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=fluffC;
+  [[-6,-6],[0,-9],[6,-6],[-8,-2],[8,-2],[-5,2],[5,2]].forEach(([dx,dy])=>{
+    ctx.beginPath();ctx.arc(cx+dx,cy-12+dy,5,0,Math.PI*2);ctx.fill();
+  });
+  ctx.fillStyle=darkC;
+  ctx.save();ctx.translate(cx-8,cy-10);ctx.rotate(-0.3);
+  ctx.beginPath();ctx.ellipse(0,0,4,8,0,0,Math.PI*2);ctx.fill();ctx.restore();
+  ctx.save();ctx.translate(cx+8,cy-10);ctx.rotate(0.3);
+  ctx.beginPath();ctx.ellipse(0,0,4,8,0,0,Math.PI*2);ctx.fill();ctx.restore();
+  ctx.fillStyle='#1a1005';
+  ctx.beginPath();ctx.arc(cx-4,cy-12,1.5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(cx+4,cy-12,1.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#1a1005';
+  ctx.beginPath();ctx.ellipse(cx,cy-8,2,1.5,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=bodyC;
+  ctx.beginPath();ctx.roundRect(cx-9,cy+17,5,9,2);ctx.fill();
+  ctx.beginPath();ctx.roundRect(cx+4,cy+17,5,9,2);ctx.fill();
+  ctx.fillStyle=fluffC;
+  ctx.beginPath();ctx.arc(cx-6,cy+26,3,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(cx+7,cy+26,3,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=bodyC;ctx.lineWidth=4;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(cx+12,cy+4);ctx.quadraticCurveTo(cx+22,cy-4,cx+18,cy-14);ctx.stroke();
+  ctx.fillStyle=fluffC;ctx.beginPath();ctx.arc(cx+18,cy-14,4,0,Math.PI*2);ctx.fill();
+}
+function makePosterTex(i){
+  const cv=document.createElement('canvas');cv.width=256;cv.height=384;
+  const x=cv.getContext('2d');
+  x.textBaseline='alphabetic';
+  const type=i%5;
+
+  if(type===0){
+    // ── アルバイト募集（青緑・求人ポスター）──
+    x.fillStyle='#e8f4fb';x.fillRect(0,0,256,384);
+    // 上部ヘッダー
+    x.fillStyle='#0066aa';x.fillRect(0,0,256,72);
+    x.fillStyle='#ffffff';x.font='bold 15px sans-serif';x.textAlign='center';
+    x.fillText('アルバイト',128,30);
+    x.font='bold 28px sans-serif';x.fillText('募集！',128,62);
+    // キャラクター（エプロンの人）
+    x.fillStyle='#f5c8a0'; // 肌色
+    x.beginPath();x.arc(128,115,22,0,Math.PI*2);x.fill(); // 顔
+    x.fillStyle='#2e7d32'; // 緑エプロン
+    x.fillRect(100,140,56,65);
+    x.fillStyle='#1565c0'; // シャツ
+    x.fillRect(106,138,44,20);
+    // エプロン紐
+    x.strokeStyle='#2e7d32';x.lineWidth=4;
+    x.beginPath();x.moveTo(110,140);x.lineTo(100,105);x.stroke();
+    x.beginPath();x.moveTo(146,140);x.lineTo(156,105);x.stroke();
+    // 手
+    x.fillStyle='#f5c8a0';
+    x.fillRect(94,155,14,28);x.fillRect(148,155,14,28);
+    // 目・口
+    x.fillStyle='#333';
+    x.fillRect(119,110,8,5);x.fillRect(133,110,8,5);
+    x.beginPath();x.arc(128,125,8,0,Math.PI);x.fillStyle='#c0392b';x.fill();
+    // 条件テキスト
+    x.fillStyle='#0066aa';x.font='bold 14px sans-serif';x.textAlign='left';
+    x.fillText('■ 勤務条件',16,222);
+    x.fillStyle='#333';x.font='11px sans-serif';
+    const lines0=['時給 1,050円〜','勤務 月〜金','時間 18:00〜22:00',
+      '交通費支給あり','未経験歓迎','週2日〜OK'];
+    lines0.forEach((t,r)=>x.fillText(t,20,242+r*18));
+    x.fillStyle='#0066aa';x.font='bold 13px sans-serif';x.textAlign='center';
+    x.fillText('詳細・お問合せ',128,352);x.font='11px sans-serif';
+    x.fillText('制服貸与あり',128,370);
+    x.strokeStyle='#0066aa';x.lineWidth=2;x.strokeRect(4,4,248,376);
+
+  }else if(type===1){
+    // ── NOW OPEN!!（新店オープンポスター）──
+    x.fillStyle='#fff8e1';x.fillRect(0,0,256,384);
+    // 背景装飾
+    x.fillStyle='#ffb300';x.fillRect(0,0,256,160);
+    x.fillStyle='#ff6f00';
+    for(let s=0;s<8;s++){
+      const sx=32*s,sy=Math.sin(s)*10+8;
+      x.fillRect(sx,sy,24,152-sy);
+    }
+    x.fillStyle='#ffffff';x.font='bold 18px sans-serif';x.textAlign='center';
+    x.fillText('NEW',128,38);
+    x.font='bold 38px sans-serif';x.fillText('OPEN!!',128,82);
+    x.font='bold 14px sans-serif';x.fillText('グランドオープン',128,108);
+    x.font='11px sans-serif';x.fillText('2027.10.01 (FRI)',128,130);
+    // 店舗イラスト（建物）
+    x.fillStyle='#5d4037';x.fillRect(68,168,120,90); // 壁
+    x.fillStyle='#4e342e';x.fillRect(58,158,140,16); // 屋根
+    x.fillStyle='#90caf9';x.fillRect(80,178,36,36);  // 窓L
+    x.fillRect(140,178,36,36);  // 窓R
+    x.fillStyle='#3e2723';x.fillRect(108,206,40,52); // ドア
+    x.fillStyle='#ffb300';
+    x.beginPath();x.arc(128,140,12,0,Math.PI*2);x.fill(); // 太陽
+    // 店舗情報
+    x.fillStyle='#3e2723';x.font='bold 13px sans-serif';x.fillText('LUMI SHOP',128,282);
+    x.font='11px sans-serif';x.fillStyle='#555';
+    x.fillText('営業時間 10:00〜20:00',128,300);
+    x.fillText('定休日：毎週火曜日',128,318);
+    x.fillText('〒100-0000 東京都千代田区',128,338);
+    x.fillStyle='#ff6f00';x.font='bold 12px sans-serif';
+    x.fillText('オープン特典あり！',128,360);
+    x.strokeStyle='#ffb300';x.lineWidth=3;x.strokeRect(4,4,248,376);
+
+  }else if(type===2){
+    // ── ルミさん動物病院（通常版）──
+    x.fillStyle='#e8f5ee';x.fillRect(0,0,256,384);
+    x.fillStyle='#4a9e6b';x.fillRect(0,0,256,72);
+    // 肉球アイコン
+    x.fillStyle='#ffffff';
+    x.beginPath();x.arc(36,40,10,0,Math.PI*2);x.fill();
+    x.beginPath();x.arc(25,28,5,0,Math.PI*2);x.fill();
+    x.beginPath();x.arc(36,24,5,0,Math.PI*2);x.fill();
+    x.beginPath();x.arc(47,28,5,0,Math.PI*2);x.fill();
+    // ヘッダーテキスト
+    x.fillStyle='#ffffff';x.font='10px sans-serif';x.textAlign='left';
+    x.fillText('犬・猫・小動物',58,28);
+    x.font='bold 16px sans-serif';x.fillText('ルミさん動物病院',58,58);
+    // 白背景
+    x.fillStyle='#ffffff';x.fillRect(0,72,256,312);
+    // 診療のご案内
+    x.fillStyle='#4a9e6b';x.font='bold 12px sans-serif';x.textAlign='center';
+    x.fillText('診療のご案内',128,94);
+    // 診療科パネル
+    const depts2=[['一般診療','外科'],['皮膚科','歯科'],['予防接種','トリミング']];
+    depts2.forEach(([a,b],r)=>{
+      x.fillStyle='#e8f5ee';x.fillRect(14,104+r*40,106,32);
+      x.strokeStyle='#4a9e6b';x.lineWidth=1;x.strokeRect(14,104+r*40,106,32);
+      x.fillStyle='#c8e8d8';x.fillRect(136,104+r*40,106,32);
+      x.strokeRect(136,104+r*40,106,32);
+      x.fillStyle='#2e7d50';x.font='bold 11px sans-serif';x.textAlign='center';
+      x.fillText(a,67,125+r*40);x.fillText(b,189,125+r*40);
+    });
+    // 区切り線
+    x.strokeStyle='#c0d8c8';x.lineWidth=1;
+    x.beginPath();x.moveTo(14,228);x.lineTo(242,228);x.stroke();
+    // 診療時間
+    x.fillStyle='#4a9e6b';x.fillRect(14,234,6,16);
+    x.fillStyle='#222';x.font='bold 11px sans-serif';x.textAlign='left';
+    x.fillText('診療時間',24,247);
+    x.fillStyle='#333';x.font='10px sans-serif';
+    ['月〜金 9:00〜19:00','土・日 9:00〜17:00','※ 祝日休診','予約優先制'].forEach((t,r)=>x.fillText(t,14,263+r*16));
+    // 茶色プードル（診療時間の右スペース）
+    drawPoodle(x,205,258,'#8B5E3C','#a0713f','#6b4423');
+    // 区切り線
+    x.beginPath();x.moveTo(14,330);x.lineTo(242,330);x.stroke();
+    // TEL
+    x.fillStyle='#222';x.font='bold 12px sans-serif';x.textAlign='center';
+    x.fillText('TEL 03-XXXX-XXXX',128,348);
+    x.font='10px sans-serif';x.fillText('初診・急患随時受付',128,362);
+    // 下部緑バー
+    x.fillStyle='#4a9e6b';x.fillRect(0,370,256,14);
+    x.fillStyle='#fff';x.font='8px sans-serif';x.textAlign='center';
+    x.fillText('わんちゃん・ねこちゃんをサポートします',128,380);
+    x.strokeStyle='#4a9e6b';x.lineWidth=2;x.strokeRect(3,3,250,378);
+
+  }else if(type===3){
+    // ── 不動産・マンション（黄×黒）──
+    x.fillStyle='#fffde7';x.fillRect(0,0,256,384);
+    x.fillStyle='#f9a825';x.fillRect(0,0,256,56);
+    x.fillStyle='#212121';x.font='bold 22px sans-serif';x.textAlign='center';
+    x.fillText('賃貸マンション',128,38);
+    // 建物イメージ
+    x.fillStyle='#78909c';x.fillRect(48,72,160,120);   // 本体
+    x.fillStyle='#546e7a';x.fillRect(44,64,168,14);    // 屋根
+    // 窓格子
+    for(let wy=0;wy<3;wy++)for(let wx=0;wx<4;wx++){
+      x.fillStyle=Math.random()>0.3?'#fffde7':'#29b6f6';
+      x.fillRect(58+wx*34,80+wy*34,24,24);
+    }
+    x.fillStyle='#37474f';x.fillRect(108,156,40,36);   // ドア
+    // 物件情報
+    x.fillStyle='#f9a825';x.fillRect(0,204,256,32);
+    x.fillStyle='#212121';x.font='bold 14px sans-serif';x.textAlign='center';
+    x.fillText('初期費用0円キャンペーン',128,225);
+    x.fillStyle='#333';x.font='11px sans-serif';x.textAlign='left';
+    ['1K / 26.8㎡','家賃 68,000円〜','敷金・礼金 0/0',
+     '築3年・オートロック','ペット相談可','駅徒歩5分'].forEach((t,r)=>{
+      x.fillStyle=r%2===0?'#fff8e1':'#ffffff';
+      x.fillRect(8,242+r*18,240,18);
+      x.fillStyle='#333';x.fillText(t,12,255+r*18);
+    });
+    x.fillStyle='#f9a825';x.font='bold 12px sans-serif';x.textAlign='center';
+    x.fillText('TEL 0120-XXX-XXX',128,358);
+    x.fillText('LUMI不動産 府中支店',128,374);
+    x.strokeStyle='#f9a825';x.lineWidth=2;x.strokeRect(4,4,248,376);
+
+  }else{
+    // ── 映画・イベント（ダーク・エンタメ系）──
+    x.fillStyle='#1a1a2e';x.fillRect(0,0,256,384);
+    // 星
+    for(let s=0;s<30;s++){
+      const sx=Math.random()*256,sy=Math.random()*200;
+      x.fillStyle=`rgba(255,255,255,${0.4+Math.random()*0.6})`;
+      const r2=0.5+Math.random()*1.5;
+      x.beginPath();x.arc(sx,sy,r2,0,Math.PI*2);x.fill();
+    }
+    // タイトルグロー
+    x.shadowColor='#e040fb';x.shadowBlur=18;
+    x.fillStyle='#ea80fc';x.font='bold 11px sans-serif';x.textAlign='center';
+    x.fillText('COMING SOON',128,50);
+    x.shadowBlur=24;x.fillStyle='#ffffff';
+    x.font='bold 30px sans-serif';x.fillText('ECHO',128,90);
+    x.font='bold 32px sans-serif';x.fillText('VOID',128,128);
+    x.shadowBlur=0;
+    // 区切り
+    const lg=x.createLinearGradient(20,145,236,145);
+    lg.addColorStop(0,'transparent');lg.addColorStop(0.5,'#e040fb');lg.addColorStop(1,'transparent');
+    x.strokeStyle=lg;x.lineWidth=1.5;
+    x.beginPath();x.moveTo(20,145);x.lineTo(236,145);x.stroke();
+    // キャスト情報
+    x.fillStyle='#ce93d8';x.font='bold 10px sans-serif';
+    x.fillText('監督：山田 繁',128,165);
+    x.fillStyle='#e1bee7';x.font='10px sans-serif';
+    x.fillText('出演：鈴木 朱莉　田中 陽斗',128,182);
+    x.fillText('     佐藤 亜紀　ほか',128,198);
+    // ジャンル・日付
+    x.fillStyle='#e040fb';x.font='bold 11px sans-serif';
+    x.fillText('SF THRILLER',128,222);
+    x.fillStyle='#ffffff';x.font='bold 14px sans-serif';
+    x.fillText('2027年 春 全国公開',128,248);
+    // ポスター枠装飾
+    x.strokeStyle='#e040fb';x.lineWidth=1;
+    x.strokeRect(8,8,240,368);x.strokeRect(12,12,232,360);
+    // 下部評価星
+    x.fillStyle='#ffeb3b';x.font='18px sans-serif';x.textAlign='center';
+    x.fillText('★★★★☆',128,300);
+    x.fillStyle='#bdbdbd';x.font='9px sans-serif';
+    x.fillText('"圧倒的映像美"  ─ 映画週報',128,318);
+    x.fillText('"今年最高の問題作"  ─ シネマ評',128,334);
+    x.fillStyle='#e040fb';x.font='bold 11px sans-serif';
+    x.fillText('全国 500 スクリーン公開',128,360);
+    x.fillText(' Official Site: echov.jp',128,376);
+  }
+  return new THREE.CanvasTexture(cv);
+}
+function makePosterTexWrong(){
+  // ── るみさん動物病院（異変版：ひらがな名＋グレープードル）──
+  const cv=document.createElement('canvas');cv.width=256;cv.height=384;
+  const x=cv.getContext('2d');
+  x.fillStyle='#e8f5ee';x.fillRect(0,0,256,384);
+  x.fillStyle='#4a9e6b';x.fillRect(0,0,256,72);
+  x.fillStyle='#ffffff';
+  x.beginPath();x.arc(36,40,10,0,Math.PI*2);x.fill();
+  x.beginPath();x.arc(25,28,5,0,Math.PI*2);x.fill();
+  x.beginPath();x.arc(36,24,5,0,Math.PI*2);x.fill();
+  x.beginPath();x.arc(47,28,5,0,Math.PI*2);x.fill();
+  x.fillStyle='#ffffff';x.font='10px sans-serif';x.textAlign='left';
+  x.fillText('犬・猫・小動物',58,28);
+  x.font='bold 16px sans-serif';x.fillText('るみさん動物病院',58,58);
+  x.fillStyle='#ffffff';x.fillRect(0,72,256,312);
+  x.fillStyle='#4a9e6b';x.font='bold 12px sans-serif';x.textAlign='center';
+  x.fillText('診療のご案内',128,94);
+  const dw=[['一般診療','外科'],['皮膚科','歯科'],['予防接種','トリミング']];
+  dw.forEach(([a,b],r)=>{
+    x.fillStyle='#e8f5ee';x.fillRect(14,104+r*40,106,32);
+    x.strokeStyle='#4a9e6b';x.lineWidth=1;x.strokeRect(14,104+r*40,106,32);
+    x.fillStyle='#c8e8d8';x.fillRect(136,104+r*40,106,32);
+    x.strokeRect(136,104+r*40,106,32);
+    x.fillStyle='#2e7d50';x.font='bold 11px sans-serif';x.textAlign='center';
+    x.fillText(a,67,125+r*40);x.fillText(b,189,125+r*40);
+  });
+  x.strokeStyle='#c0d8c8';x.lineWidth=1;
+  x.beginPath();x.moveTo(14,228);x.lineTo(242,228);x.stroke();
+  x.fillStyle='#4a9e6b';x.fillRect(14,234,6,16);
+  x.fillStyle='#222';x.font='bold 11px sans-serif';x.textAlign='left';
+  x.fillText('診療時間',24,247);
+  x.fillStyle='#333';x.font='10px sans-serif';
+  ['月〜金 9:00〜19:00','土・日 9:00〜17:00','※ 祝日休診','予約優先制'].forEach((t,r)=>x.fillText(t,14,263+r*16));
+  // グレープードル
+  drawPoodle(x,205,258,'#6e6e6e','#8a8a8a','#5a5a5a');
+  x.beginPath();x.moveTo(14,330);x.lineTo(242,330);x.stroke();
+  x.fillStyle='#222';x.font='bold 12px sans-serif';x.textAlign='center';
+  x.fillText('TEL 03-XXXX-XXXX',128,348);
+  x.font='10px sans-serif';x.fillText('初診・急患随時受付',128,362);
+  x.fillStyle='#4a9e6b';x.fillRect(0,370,256,14);
+  x.fillStyle='#fff';x.font='8px sans-serif';x.textAlign='center';
+  x.fillText('わんちゃん・ねこちゃんをサポートします',128,380);
+  x.strokeStyle='#4a9e6b';x.lineWidth=2;x.strokeRect(3,3,250,378);
+  return new THREE.CanvasTexture(cv);
+}
+function makeExitSignTex(){
+  // Backlit yellow sign matching real Exit 8
+  const cv=document.createElement('canvas');cv.width=1024;cv.height=128;
+  const x=cv.getContext('2d');
+  // Bright yellow base
+  x.fillStyle='#f0cc00';x.fillRect(0,0,1024,128);
+  // Subtle inner highlight (backlit)
+  const gl=x.createLinearGradient(0,0,0,128);
+  gl.addColorStop(0,'rgba(255,255,200,0.35)');
+  gl.addColorStop(0.5,'rgba(255,248,180,0.15)');
+  gl.addColorStop(1,'rgba(180,140,0,0.10)');
+  x.fillStyle=gl;x.fillRect(0,0,1024,128);
+  // Dark border
+  x.strokeStyle='#000000';x.lineWidth=5;x.strokeRect(2.5,2.5,1019,123);
+  // ── Text: pure black ──
+  x.fillStyle='#000000';x.textAlign='left';x.textBaseline='alphabetic';
+  x.font='bold 56px sans-serif';x.fillText('↑',30,82);
+  x.font='bold 48px sans-serif';x.fillText('出口',105,80);
+  x.font='bold 22px sans-serif';x.fillText('Exit',108,108);
+  x.fillStyle='#000000';x.fillRect(410,12,4,104);
+  x.textAlign='center';
+  x.font='bold 96px sans-serif';x.fillText('8',720,94);
+  return new THREE.CanvasTexture(cv);
+}
+// emissiveMap: 文字部分=黒(発光なし)、背景=白(発光あり)
+// → 文字が発光で白くならず、真っ黒に見える
+let _exitSignEmissiveMap=null;
+function makeExitSignEmissiveMap(){
+  if(_exitSignEmissiveMap) return _exitSignEmissiveMap;
+  const cv=document.createElement('canvas');cv.width=1024;cv.height=128;
+  const x=cv.getContext('2d');
+  // 背景は白（発光する）
+  x.fillStyle='#ffffff';x.fillRect(0,0,1024,128);
+  // 文字・罫線は黒（発光しない） ← color mapと同じ位置・フォント
+  x.fillStyle='#000000';x.textAlign='left';x.textBaseline='alphabetic';
+  x.font='bold 56px sans-serif';x.fillText('↑',30,82);
+  x.font='bold 48px sans-serif';x.fillText('出口',105,80);
+  x.font='bold 22px sans-serif';x.fillText('Exit',108,108);
+  x.fillRect(410,12,4,104);
+  x.textAlign='center';
+  x.font='bold 96px sans-serif';x.fillText('8',720,94);
+  x.strokeStyle='#000000';x.lineWidth=5;x.strokeRect(2.5,2.5,1019,123);
+  _exitSignEmissiveMap=new THREE.CanvasTexture(cv);
+  return _exitSignEmissiveMap;
+}
+
+// ── EXIT SIGN 3D ──────────────────────────────────────────────────────────────
+// 厚み20cmの立体看板。前後両面に8番出口表示、側面は白。
+// facingMinusZ=false → +Z向き(デフォルト), true → -Z向き(rotation.y=PI)
+function placeExitSign3D(cx,cy,cz,facingMinusZ,lightIntensity){
+  const SW=2.8, SH=0.30, SD=0.10;
+
+  // 面マテリアル生成（mirrorU=true で左右反転）
+  function makeSignFaceMat(mirrorU){
+    const tex=makeExitSignTex();
+    if(mirrorU){tex.repeat.set(-1,1);tex.offset.set(1,0);tex.needsUpdate=true;}
+    const emit=makeExitSignEmissiveMap().clone();
+    emit.needsUpdate=true;
+    if(mirrorU){emit.repeat.set(-1,1);emit.offset.set(1,0);}
+    return new THREE.MeshStandardMaterial({
+      map:tex, roughness:0.08, metalness:0.0,
+      emissive:new THREE.Color(0xc8a800), emissiveIntensity:0.7,
+      emissiveMap:emit
+    });
+  }
+
+  // 側面・端面: 白（バックライト由来のうっすら発光）
+  const sideMat=new THREE.MeshStandardMaterial({
+    color:0xffffff, roughness:0.55, metalness:0.05,
+    emissive:new THREE.Color(0xfff4b0), emissiveIntensity:0.10
+  });
+
+  // BoxGeometry マテリアル順: [+X, -X, +Y, -Y, +Z(face4), -Z(face5)]
+  // facingMinusZ=false (回転なし):
+  //   face4(+Z) = フロント → standard UV ✓
+  //   face5(-Z) = バック   → mirrorU でX反転 → 裏から見て正しく表示 ✓
+  // facingMinusZ=true (rotation.y=PI):
+  //   face4(ローカル+Z→ワールド-Z) = UV がローカル回転で反転するため mirrorU で補正 ✓
+  //   face5(ローカル-Z→ワールド+Z) = standard UV ✓
+  // 前後両面とも同じ標準テクスチャ（ミラーなし）
+  const face4Mat=makeSignFaceMat(false);
+  const face5Mat=makeSignFaceMat(false);
+
+  const geo=new THREE.BoxGeometry(SW,SH,SD);
+  const mesh=new THREE.Mesh(geo,[
+    sideMat,sideMat,sideMat,sideMat,
+    face4Mat,face5Mat
+  ]);
+  if(facingMinusZ) mesh.rotation.y=Math.PI;
+  mesh.position.set(cx,cy,cz);
+  scene.add(mesh);
+
+  // バックライト発光の点光源
+  const lgt=new THREE.PointLight(0xffe080,lightIntensity||0.45,5);
+  lgt.position.set(cx,cy+0.04,cz);
+  scene.add(lgt);
+
+  return mesh;
+}
+function makeDoorTex(label){
+  const cv=document.createElement('canvas'); cv.width=256; cv.height=512;
+  const ctx=cv.getContext('2d');
+
+  // ── ベース: 白塗装鉄扉（上から下へ微妙にグラデーション）
+  const grad=ctx.createLinearGradient(0,0,0,512);
+  grad.addColorStop(0,'#e2e0db');
+  grad.addColorStop(0.45,'#dcdad4');
+  grad.addColorStop(1,'#d0cec8');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,256,512);
+
+  // ── 塗装ムラ（微細ノイズ）
+  for(let i=0;i<600;i++){
+    const px=Math.random()*256, py=Math.random()*512;
+    ctx.fillStyle=`rgba(0,0,0,${0.004+Math.random()*0.018})`;
+    ctx.fillRect(px,py,1+Math.random()*2,1);
+  }
+
+  // ── 「分電盤室」テキスト（黒、上部）
+  ctx.fillStyle='#141414';
+  ctx.font='bold 22px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label||'分電盤室',128,68);
+
+  // ── 下部の汚れ・使用感（キック傷帯）
+  const dirtyGrad=ctx.createLinearGradient(0,360,0,512);
+  dirtyGrad.addColorStop(0,'rgba(50,42,35,0)');
+  dirtyGrad.addColorStop(1,'rgba(50,42,35,0.10)');
+  ctx.fillStyle=dirtyGrad; ctx.fillRect(0,360,256,152);
+
+  // ── 縦方向の細い擦り傷（ハイライト）
+  for(let i=0;i<8;i++){
+    const sx=25+Math.random()*206;
+    const sy=280+Math.random()*180;
+    const sh=20+Math.random()*70;
+    ctx.fillStyle=`rgba(210,208,202,${0.12+Math.random()*0.22})`;
+    ctx.fillRect(sx,sy,1,sh);
+  }
+
+  // ── 右端の薄い影（フレームとの境界感）
+  const shadowR=ctx.createLinearGradient(216,0,256,0);
+  shadowR.addColorStop(0,'rgba(0,0,0,0)');
+  shadowR.addColorStop(1,'rgba(0,0,0,0.07)');
+  ctx.fillStyle=shadowR; ctx.fillRect(216,0,40,512);
+
+  // ── 左端の薄い影
+  const shadowL=ctx.createLinearGradient(40,0,0,0);
+  shadowL.addColorStop(0,'rgba(0,0,0,0)');
+  shadowL.addColorStop(1,'rgba(0,0,0,0.07)');
+  ctx.fillStyle=shadowL; ctx.fillRect(0,0,40,512);
+
+  return new THREE.CanvasTexture(cv);
+}
+
+// ── BUILD CORRIDOR ─────────────────────────────────────
+let WT,FT,CT;
+
+// Clone texture and set repeat so tiles appear SQUARE given real surface dims
+function tiledTex(baseTex, surfW, surfH, tileSize){
+  const t = baseTex.clone();
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(surfW/tileSize, surfH/tileSize);
+  t.needsUpdate = true;
+  return t;
+}
+
+function addWall(g,w,h,x,y,z,ry,tex){
+  const base = tex || WT;
+  const t = tiledTex(base, w, h, WALL_TILE*WALL_ATLAS); // アトラスは8タイル幅
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w,h),
+    new THREE.MeshStandardMaterial({map:t,roughness:0.52,metalness:0.04}));
+  m.rotation.y=ry;m.position.set(x,y,z);g.add(m);return m;
+}
+function addFloor(g,w,d,cx,cz){
+  const t = tiledTex(FT, w, d, FLOOR_TILE);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),
+    new THREE.MeshStandardMaterial({map:t,roughness:0.9}));
+  m.rotation.x=-Math.PI/2;m.position.set(cx,0,cz);
+  m.receiveShadow=true; // 床に影を受け取らせる
+  g.add(m);return m;
+}
+function addCeil(g,w,d,cx,cz){
+  const t=CT.clone();
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  // Panels run across corridor width (wrapS) and deep along length (wrapT)
+  t.repeat.set(w/CEIL_TILE_W, d/CEIL_TILE_H);
+  t.needsUpdate=true;
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),
+    new THREE.MeshStandardMaterial({map:t,roughness:0.85,metalness:0.05}));
+  m.rotation.x=Math.PI/2;m.position.set(cx,CH,cz);g.add(m);return m;
+}
+
+function buildCorridor(){
+  // 全壁: 同じニュートラルホワイトベース、個体差はタイル単位で発生
+  WT  =makeWallTex(0,0,0, 42);  // メイン廊下・左右統一
+  const WT_R=makeWallTex(0,0,0, 99); // 異なるseedで別パターン
+  const WT_L=makeWallTex(0,0,0, 77); // 異なるseedで別パターン
+  FT=makeFloorTex();CT=makeCeilTex();
+  const g=new THREE.Group(),hy=CH/2;
+
+  // MAIN CORRIDOR  x[-2.2,+2.2]  z[MAIN_Z_FAR,MAIN_Z_NEAR]
+  const mLen=MAIN_Z_NEAR-MAIN_Z_FAR; // 30.9
+  const mCZ=(MAIN_Z_NEAR+MAIN_Z_FAR)/2;
+  addFloor(g,CW,mLen,0,mCZ);
+  addCeil( g,CW,mLen,0,mCZ);
+  // back wall removed – backward S-bend corridor continues here
+  addWall(g,mLen,CH, MAIN_X_R,hy,mCZ,-Math.PI/2, WT_R);  // right wall (warm cream)
+  addWall(g,mLen,CH, MAIN_X_L,hy,mCZ, Math.PI/2,  WT_L);  // left wall  (cool gray)
+
+  // CONNECTOR  x[EXIT_X_FAR,MAIN_X_R]  z[CONN_Z_FAR,MAIN_Z_FAR]
+  const cXW=MAIN_X_R-EXIT_X_FAR;  // 13.2
+  const cCX=(MAIN_X_R+EXIT_X_FAR)/2; // -4.4
+  const cCZ=(MAIN_Z_FAR+CONN_Z_FAR)/2; // -32.2
+  addFloor(g,cXW,CW,cCX,cCZ);
+  addCeil( g,cXW,CW,cCX,cCZ);
+  // north wall (z=MAIN_Z_FAR) from x=EXIT_X_FAR to x=MAIN_X_L (gap = opening to main)
+  const nwW=MAIN_X_L-EXIT_X_FAR; // 8.8
+  const nwCX=(EXIT_X_FAR+MAIN_X_L)/2; // -6.6
+  addWall(g,nwW,CH,nwCX,hy,MAIN_Z_FAR-0.01,Math.PI);
+  // south wall (z=CONN_Z_FAR): only RIGHT portion x=[CONN_X_FAR, MAIN_X_R]
+  // Left portion x=[EXIT_X_FAR, CONN_X_FAR] is the OPENING to the exit section
+  const swW=MAIN_X_R-CONN_X_FAR;   // 8.8  (-6.6 to +2.2)
+  const swCX=(MAIN_X_R+CONN_X_FAR)/2; // -2.2
+  addWall(g,swW,CH,swCX,hy,CONN_Z_FAR+0.01,0);
+  // right wall of connector (x=MAIN_X_R) connector depth
+  addWall(g,CW,CH,MAIN_X_R,hy,cCZ,-Math.PI/2,WT_R);  // コネクタ右壁も統一
+  // far-left wall (x=EXIT_X_FAR) covers connector+exit height
+  const llH=MAIN_Z_FAR-EXIT_Z_FAR; // 8.8
+  const llCZ=(MAIN_Z_FAR+EXIT_Z_FAR)/2;
+  addWall(g,llH,CH,EXIT_X_FAR,hy,llCZ,Math.PI/2);
+
+  // EXIT SECTION  x[EXIT_X_FAR,CONN_X_FAR]  z[EXIT_Z_FAR,CONN_Z_FAR]
+  const eCX=(EXIT_X_FAR+CONN_X_FAR)/2; // -8.8
+  const eCZ=(EXIT_Z_FAR+CONN_Z_FAR)/2; // -36.6
+  addFloor(g,CW,CW,eCX,eCZ);
+  addCeil( g,CW,CW,eCX,eCZ);
+  addWall(g,CW,CH,CONN_X_FAR,hy,eCZ,-Math.PI/2); // east wall
+  // South fog-extension: 32m so far cap is hidden in fog (mirrors backward exit treatment)
+  const eExtLen=32.0;
+  const eExtFarZ=EXIT_Z_FAR-eExtLen;    // -70.8
+  const eExtCZ=(EXIT_Z_FAR+eExtFarZ)/2; // -54.8
+  addFloor(g,CW,eExtLen,eCX,eExtCZ);
+  addCeil( g,CW,eExtLen,eCX,eExtCZ);
+  addWall(g,eExtLen,CH,CONN_X_FAR,hy,eExtCZ,-Math.PI/2); // east wall ext
+  addWall(g,eExtLen,CH,EXIT_X_FAR,hy,eExtCZ, Math.PI/2);  // west wall ext
+  addWall(g,CW,CH,eCX,hy,eExtFarZ-0.01,Math.PI); // fog-cap (hidden deep in fog)
+
+  // ── BACKWARD CONNECTOR  x[-2.2,+11]  z[MAIN_Z_NEAR,B_CONN_Z_FAR] ──
+  // Mirrors forward S-bend: no right inner wall, floor/ceiling opens to viewer’s left
+  // when facing north. Inner north wall blocks straight-ahead; gap on right = S-bend.
+  const bcXW=B_EXIT_X_FAR-MAIN_X_L;         // 13.2
+  const bcCX=(MAIN_X_L+B_EXIT_X_FAR)/2;     // +4.4
+  const bcCZ=(MAIN_Z_NEAR+B_CONN_Z_FAR)/2;  // +3.1
+  addFloor(g,bcXW,CW,bcCX,bcCZ);
+  addCeil( g,bcXW,CW,bcCX,bcCZ);
+  // south wall of extension (z=MAIN_Z_NEAR+ε): x∈[+2.2,+11]
+  // Closes void south of connector (visible from inside only, not from main corridor)
+  const bswW=B_EXIT_X_FAR-MAIN_X_R;         // 8.8
+  const bswCX=(MAIN_X_R+B_EXIT_X_FAR)/2;    // +6.6
+  addWall(g,bswW,CH, bswCX,hy,MAIN_Z_NEAR+0.01, 0);
+  // inner north wall: x∈[-2.2,+2.2] blocks straight-ahead; gap x∈[+2.2,+11] = S-bend
+  addWall(g,CW,CH, 0,hy,B_CONN_Z_FAR-0.01, Math.PI);
+  // mid north wall: x∈[+2.2,+6.6] closes void between inner wall and exit opening
+  addWall(g,CW,CH, B_CONN_X_FAR-CW/2,hy,B_CONN_Z_FAR-0.02, Math.PI);
+  // left wall (x=-2.2): connector section only z∈[+0.9,+5.3]
+  addWall(g,CW,CH, MAIN_X_L,hy,bcCZ, Math.PI/2);
+  // far-right wall (x=+11): full height from MAIN_Z_NEAR to fog-cap
+  const brwH=B_EXT_Z_FAR-MAIN_Z_NEAR;       // 40.8 (前方と同じ)
+  const brwCZ=(MAIN_Z_NEAR+B_EXT_Z_FAR)/2;  // +21.3
+  addWall(g,brwH,CH, B_EXIT_X_FAR,hy,brwCZ,-Math.PI/2);
+
+  // ── BACKWARD EXIT SECTION  x[+6.6,+11]  z[B_CONN_Z_FAR,B_EXIT_Z_FAR] ──
+  // 前方のEXIT SECTIONと対称: CW×CW の第2折れ曲がり部屋
+  const beLen=B_EXIT_Z_FAR-B_CONN_Z_FAR;    // 4.4 = CW
+  const beCX=(B_CONN_X_FAR+B_EXIT_X_FAR)/2; // +8.8
+  const beCZ=(B_CONN_Z_FAR+B_EXIT_Z_FAR)/2; // +7.5
+  addFloor(g,CW,beLen,beCX,beCZ);
+  addCeil( g,CW,beLen,beCX,beCZ);
+  // west wall (x=+6.6) 出口セクション分のみ
+  addWall(g,beLen,CH, B_CONN_X_FAR,hy,beCZ, Math.PI/2);
+
+  // ── BACKWARD EXTENSION  x[+6.6,+11]  z[B_EXIT_Z_FAR,B_EXT_Z_FAR] ──
+  // 前方のeExtLenと同じ32m延伸。フォグの奥に消える。
+  const bExtLen=B_EXT_Z_FAR-B_EXIT_Z_FAR;    // 32.0
+  const bExtCZ=(B_EXIT_Z_FAR+B_EXT_Z_FAR)/2; // +25.7
+  addFloor(g,CW,bExtLen,beCX,bExtCZ);
+  addCeil( g,CW,bExtLen,beCX,bExtCZ);
+  // west wall (x=+6.6) 延伸分
+  addWall(g,bExtLen,CH, B_CONN_X_FAR,hy,bExtCZ, Math.PI/2);
+  // north fog-cap (z=+41.7, completely hidden by fog)
+  addWall(g,CW,CH, beCX,hy,B_EXT_Z_FAR-0.01, Math.PI);
+
+  return g;
+}
+
+// ── POSTER PANEL (立体広告パネル) ────────────────────────
+// px      : 壁面X座標 (MAIN_X_L=-2.2 など)
+// pyCy    : ポスター中心Y (通常 1.6)
+// cz      : ポスター中心Z
+// faceSign: +1=右向き(左壁用)  -1=左向き(右壁用)
+// tex     : makePosterTex() の戻り値
+// addToMeshes: true → posterMeshes に追加
+// 戻り値  : posterMesh (異変システムがそのまま参照可)
+function addPosterPanel(px,pyCy,cz,faceSign,tex,addToMeshes){
+  const PW=0.82, PH=1.22;   // ポスター領域
+  const FW=0.040;            // フレーム縁幅
+  const FD=0.025;            // フレーム奥行き(X)
+  const GAP=0.020;           // 壁から浮かせる隙間
+
+  const OW=PW+2*FW;          // パネル外寸（Z方向=幅）
+  const OH=PH+2*FW;          // パネル外寸（Y方向=高さ）
+
+  // ─ X 座標計算（faceSign=+1: 壁=px, 通路=+X方向）─
+  const backCX   = px + faceSign*(GAP+0.004);        // 背板中心
+  const frameCX  = px + faceSign*(GAP+FD*0.5);       // フレーム中心
+  const posterX  = px + faceSign*(GAP+FD+0.002);     // ポスター面
+  const acrylicX = px + faceSign*(GAP+FD+0.008);     // アクリル面
+  const matRY    = faceSign>0 ? Math.PI*0.5 : -Math.PI*0.5;
+
+  // 1. 背板（ダーク）
+  const backMesh=new THREE.Mesh(new THREE.BoxGeometry(0.008,OH+0.01,OW+0.01),
+    new THREE.MeshStandardMaterial({color:0x1c1c1c,roughness:0.92,metalness:0.05}));
+  backMesh.position.set(backCX,pyCy,cz); scene.add(backMesh);
+
+  // 2. アルミフレーム（4本）
+  const frameMat=new THREE.MeshStandardMaterial({color:0xbcc0c4,metalness:0.72,roughness:0.32});
+  const tBar=new THREE.Mesh(new THREE.BoxGeometry(FD,FW,OW),frameMat);
+  tBar.position.set(frameCX,pyCy+PH*0.5+FW*0.5,cz); scene.add(tBar);
+  const bBar=new THREE.Mesh(new THREE.BoxGeometry(FD,FW,OW),frameMat);
+  bBar.position.set(frameCX,pyCy-PH*0.5-FW*0.5,cz); scene.add(bBar);
+  const lBar=new THREE.Mesh(new THREE.BoxGeometry(FD,PH,FW),frameMat);
+  lBar.position.set(frameCX,pyCy,cz+PW*0.5+FW*0.5); scene.add(lBar);
+  const rBar=new THREE.Mesh(new THREE.BoxGeometry(FD,PH,FW),frameMat);
+  rBar.position.set(frameCX,pyCy,cz-PW*0.5-FW*0.5); scene.add(rBar);
+
+  // 3. 白マット背景
+  const matBg=new THREE.Mesh(new THREE.PlaneGeometry(PW,PH),
+    new THREE.MeshStandardMaterial({color:0xeeebe4,roughness:0.96}));
+  matBg.rotation.y=matRY;
+  matBg.position.set(px+faceSign*(GAP+FD-0.001),pyCy,cz); scene.add(matBg);
+
+  // 4. ポスター本体
+  const posterMesh=new THREE.Mesh(new THREE.PlaneGeometry(PW,PH),
+    new THREE.MeshStandardMaterial({map:tex,roughness:0.88,metalness:0.0}));
+  posterMesh.rotation.y=matRY;
+  posterMesh.position.set(posterX,pyCy,cz); scene.add(posterMesh);
+
+  // 5. アクリル保護板（薄い半透明）
+  const acrylicMesh=new THREE.Mesh(new THREE.PlaneGeometry(PW,PH),
+    new THREE.MeshStandardMaterial({
+      color:0xddeeff,transparent:true,opacity:0.11,
+      roughness:0.06,metalness:0.18,side:THREE.FrontSide
+    }));
+  acrylicMesh.rotation.y=matRY;
+  acrylicMesh.position.set(acrylicX,pyCy,cz); scene.add(acrylicMesh);
+
+  if(addToMeshes) posterMeshes.push(posterMesh);
+  return posterMesh;
+}
+
+// ── DECORATIONS ───────────────────────────────────────
+function addDecorations(){
+  posterMeshes=[];
+  // 立体広告パネル（左壁・メイン廊下）
+  [-5,-10,-15,-20,-25].forEach((z,i)=>{
+    addPosterPanel(MAIN_X_L,1.6,z,+1,makePosterTex(i),true);
+  });
+
+  doorMeshes=[];
+  const _dTex=makeDoorTex();
+  // ── 改良版 placeDoor ─────────────────────────────────────────────────────
+  // px=壁のX座標, py=扉中心Y(=DH/2=1.04), faceSign=-1(右壁)/+1(左壁)
+  // z=扉中心Z, pushToMeshes=doorMeshesに追加するか
+  //
+  // X座標設計（faceSign=-1, 右壁 px=+2.2 の場合）:
+  //   通路方向 = -X  /  壁奥 = +X
+  //   フレーム中心 px + faceSign*0.01 = px-0.01  → 前面が壁より4cm通路側に出る
+  //   扉    中心 px - faceSign*0.01 = px+0.01  → 前面が壁より1cm通路側（視認可）
+  //   奥まり感 = 4cm - 1cm = 3cm
+  function placeDoor(px,py,faceSign,z,pushToMeshes,tex){
+    const DW=0.88, DH=2.08, DT=0.04;  // 扉: 幅(Z), 高さ(Y), 厚み(X)
+    const FW=0.065;                    // フレーム枠幅
+    const FT=0.06;                     // フレーム奥行き(X)
+
+    // ── X中心座標 ──────────────────────────────────────────────────────────
+    // frameCX: px + faceSign*0.01  (faceSign=-1 → px-0.01, 通路側1cm)
+    //   前面 frameCX + faceSign*(FT/2) = px + faceSign*0.04 (通路側4cm突出)
+    //   背面                            = px - faceSign*0.02 (壁奥2cm)
+    const frameCX = px + faceSign * 0.01;
+
+    // doorCX:  px - faceSign*0.01  (faceSign=-1 → px+0.01, 壁奥1cm)
+    //   前面(通路側) doorCX + faceSign*(DT/2) = px + faceSign*0.01 (通路側1cm → 見える)
+    //   背面(壁奥)                             = px - faceSign*0.03 (壁奥3cm)
+    const doorCX = px - faceSign * 0.01;
+
+    // ── 扉本体 BoxGeometry(厚み4cm) ───────────────────────────────────────
+    const doorMat = new THREE.MeshStandardMaterial({
+      map: tex||_dTex,
+      roughness: 0.82,
+      metalness: 0.06,
+      color: 0xf5f3ee,
+    });
+    const dm = new THREE.Mesh(new THREE.BoxGeometry(DT, DH, DW), doorMat);
+    dm.position.set(doorCX, py, z);
+    scene.add(dm);
+    if(pushToMeshes) doorMeshes.push(dm);
+
+    // ── 白塗装鉄フレーム (4辺) ────────────────────────────────────────────
+    // フレームは扉より通路側に出っ張り → 奥まった設備室扉の立体感を演出
+    const fM = new THREE.MeshStandardMaterial({
+      color: 0xa8a6a0,   // 扉より一段濃いグレー（コンクリート系）
+      roughness: 0.75,
+      metalness: 0.12,
+    });
+
+    // 縦枠 左右 (高さ: DH + 上下FW各1本分)
+    [-1, 1].forEach(side => {
+      const bar = new THREE.Mesh(
+        new THREE.BoxGeometry(FT, DH + FW * 2, FW), fM
+      );
+      bar.position.set(frameCX, py, z + side * (DW / 2 + FW / 2));
+      scene.add(bar);
+    });
+
+    // 上枠 (幅: DW + 左右縦枠2本分)
+    const topBar = new THREE.Mesh(
+      new THREE.BoxGeometry(FT, FW, DW + FW * 2), fM
+    );
+    topBar.position.set(frameCX, py + DH / 2 + FW / 2, z);
+    scene.add(topBar);
+
+    // 下枠 (床との継ぎ目、薄め)
+    const botBar = new THREE.Mesh(
+      new THREE.BoxGeometry(FT, FW * 0.55, DW + FW * 2), fM
+    );
+    botBar.position.set(frameCX, py - DH / 2 - FW * 0.275, z);
+    scene.add(botBar);
+
+    // ── 銀色球体ノブ ──────────────────────────────────────────────────────
+    const kM = new THREE.MeshStandardMaterial({
+      color: 0xc8c6c2,   // マット調シルバー（明るいグレー）
+      metalness: 0.80,
+      roughness: 0.42,   // マット: 光沢抑えめ
+    });
+
+    // 扉前面(通路側)のX座標: doorCX + faceSign * (DT/2)
+    //   faceSign=-1: (px+0.01) + (-1)*0.02 = px-0.01  (壁面より1cm通路側)
+    const doorFrontX = doorCX + faceSign * (DT / 2);
+    const knobZ = z - 0.27;  // ノブのZ位置（扉左側: -Z方向に27cmオフセット）
+
+    // エスクチョン（取付けプレート: 扉前面から約1cm突出）
+    const esc = new THREE.Mesh(new THREE.CylinderGeometry(0.034,0.034,0.014,16), kM);
+    esc.rotation.z = Math.PI / 2;
+    esc.position.set(doorFrontX + faceSign * 0.009, 1.0, knobZ);
+    scene.add(esc);
+
+    // ステム（軸: エスクチョンから球体ノブへの連結棒）
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.013,0.013,0.050,10), kM);
+    stem.rotation.z = Math.PI / 2;
+    stem.position.set(doorFrontX + faceSign * 0.034, 1.0, knobZ);
+    scene.add(stem);
+
+    // 球体ノブ本体（半径3.2cm）
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.032,16,12), kM);
+    ball.position.set(doorFrontX + faceSign * 0.062, 1.0, knobZ);
+    scene.add(ball);
+  }
+  // 扉テキストを個別に設定（手前から順）
+  placeDoor(MAIN_X_R,1.04,-1,-7, true, makeDoorTex('分電室'));
+  placeDoor(MAIN_X_R,1.04,-1,-16,true, makeDoorTex('従業員専用'));
+  placeDoor(MAIN_X_R,1.04,-1,-24,true, makeDoorTex('清掃員詰所'));
+
+  // Exit sign – wide backlit panel (real Exit 8: spans corridor width, low height)
+  placeExitSign3D(0, CH-0.19, -3.5, false, 0.45);
+
+  // Light fixtures – run ACROSS corridor (parallel to ceiling stripes, wall-to-wall)
+  const fxMat=new THREE.MeshStandardMaterial({color:0xffffff,emissive:new THREE.Color(0xe8f0ff),emissiveIntensity:1.0});
+  for(let z=-4;z>MAIN_Z_FAR+1;z-=6){
+    const fx=new THREE.Mesh(new THREE.BoxGeometry(3.6,0.04,0.12),fxMat);
+    fx.position.set(0,CH-0.02,z);scene.add(fx);
+  }
+
+  // (No baseboards – matches real Exit 8)
+  const bL=MAIN_Z_NEAR-MAIN_Z_FAR,bCZ=(MAIN_Z_NEAR+MAIN_Z_FAR)/2;
+
+  // Yellow tactile guidance strip (点字ブロック・誘導ブロック) – single wide ridged strip
+  // ── 誘導ブロック テクスチャ生成（縦リッジ or 横リッジ） ──
+  function makeTacBlockTex(horiz){
+    const cv=document.createElement('canvas'); cv.width=128; cv.height=128;
+    const ctx=cv.getContext('2d');
+    // 溝（ベース）
+    ctx.fillStyle='#B89000'; ctx.fillRect(0,0,128,128);
+    // ブロック継ぎ目ライン（リッジと直交方向）
+    ctx.fillStyle='#8A6A00';
+    if(!horiz){ ctx.fillRect(0,0,128,5); ctx.fillRect(0,123,128,5); }
+    else       { ctx.fillRect(0,0,5,128); ctx.fillRect(123,0,5,128); }
+    // 4本リッジ（pos = 中心 16,48,80,112）
+    [16,48,80,112].forEach(pos=>{
+      const hw=11;
+      if(!horiz){
+        // 縦バンド（V方向 = 走行Z方向）
+        ctx.fillStyle='#DDB800'; ctx.fillRect(pos-hw, 5,hw*2,118);
+        ctx.fillStyle='#F0CC00'; ctx.fillRect(pos-hw, 5,Math.floor(hw*.65),118);
+        ctx.fillStyle='#FFE040'; ctx.fillRect(pos-4,  5,8,118);
+        ctx.fillStyle='#A08200'; ctx.fillRect(pos+hw-5,5,5,118);
+      } else {
+        // 横バンド（U方向 = 横断X方向）
+        ctx.fillStyle='#DDB800'; ctx.fillRect(5,pos-hw,118,hw*2);
+        ctx.fillStyle='#F0CC00'; ctx.fillRect(5,pos-hw,118,Math.floor(hw*.65));
+        ctx.fillStyle='#FFE040'; ctx.fillRect(5,pos-4, 118,8);
+        ctx.fillStyle='#A08200'; ctx.fillRect(5,pos+hw-5,118,5);
+      }
+    });
+    const t=new THREE.CanvasTexture(cv);
+    t.wrapS=t.wrapT=THREE.RepeatWrapping;
+    return t;
+  }
+  const _tacTexV = makeTacBlockTex(false); // 縦リッジ（Z方向ストリップ用）
+  const _tacTexH = makeTacBlockTex(true);  // 横リッジ（X方向横断ストリップ用）
+  // 側面用 単色マテリアル
+  const _tacSide = new THREE.MeshStandardMaterial({color:0xCC9E00,roughness:0.88,metalness:0.0});
+  // ブロックサイズ（m）
+  const _BS = 0.30;
+  // 誘導ストリップ追加（BoxGeometry で立体的に）
+  // isH=false → Z方向縦ストリップ、isH=true → X方向横断ストリップ
+  function addStrip(w,d,x,z,isH){
+    const src = isH ? _tacTexH : _tacTexV;
+    const tex = src.clone();
+    tex.repeat.set(
+      Math.max(1,Math.round(w/_BS)),
+      Math.max(1,Math.round(d/_BS))
+    );
+    tex.needsUpdate=true;
+    const topMat=new THREE.MeshStandardMaterial({map:tex,roughness:0.88,metalness:0.02});
+    const BH=0.015; // ブロック高さ 15mm
+    // BoxGeometry face order: +x,-x,+y(top),-y,+z,-z
+    const mats=[_tacSide,_tacSide,topMat,_tacSide,_tacSide,_tacSide];
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,BH,d),mats);
+    m.position.set(x, BH/2 + (isH ? 0.002 : 0), z); scene.add(m);
+  }
+  // ── MAIN CORRIDOR strip (Z-direction) ──
+  addStrip(0.42,bL,  -1.1,bCZ, false);
+
+  // ── FORWARD S-BEND ──
+  // S字内コーナーで折れ曲がる3ピース構成
+  // 出口廊下: x∈[-11.0,-6.6], 左壁x=-11.0から1.1m = x=-9.9
+  const fwdExX = EXIT_X_FAR + CW/4; // -9.9  出口左壁から1.1m内側
+  // 横断Z座標: 北壁(z=-30)から1.1m奥 = 南壁(z=-34.4)から3.3m手前 = z=-31.1
+  const Z_TURN_F = MAIN_Z_FAR - CW/4; // -31.1
+  // ① 入口縦ピース: x=-1.1, z=-30→-31.1（直進, 長さ1.1m）
+  addStrip(0.42, CW/4+0.42, -1.1, (MAIN_Z_FAR+Z_TURN_F)/2, false);
+  // ② 横ピース: z=-31.1, x=-1.1→-9.9（幅8.8m=2CW: 左1.1m+右7.7m）
+  addStrip(2*CW+0.42, 0.42, (-1.1+fwdExX)/2, Z_TURN_F, true);
+  // ③ 出口縦ピース: x=-9.9, z=-31.1→-38.8（長さ7.7m）
+  addStrip(0.42, (Z_TURN_F-EXIT_Z_FAR)+0.42, fwdExX, (Z_TURN_F+EXIT_Z_FAR)/2, false);
+
+  // ── BACKWARD S-BEND strips ──
+  // 後方S字: 右方向シフト（前方の鏡像）
+  // 後方出口廊下: x∈[+6.6,+11.0], 右壁x=+11.0から1.1m = x=+9.9
+  const bwdExX = B_EXIT_X_FAR - CW/4; // +9.9  右壁(x=+11.0)から1.1m内側
+  // 右折Z座標: 北壁(z=+0.9)から1.1m内側 = 南壁(z=+5.3)から3.3m手前 = z=+2.0
+  const Z_TURN_B = MAIN_Z_NEAR + CW/4; // +2.0
+  // ① 入口縦ピース: x=-1.1, z=+0.9→+2.0（直進, 長さ1.1m）
+  addStrip(0.42, CW/4+0.42, -1.1, (MAIN_Z_NEAR+Z_TURN_B)/2, false);
+  // ② 横ピース: z=+2.0, x=-1.1→+9.9（幅11.0m: 左1.1m+右7.7m+3.3m）
+  addStrip((bwdExX-(-1.1))+0.42, 0.42, (-1.1+bwdExX)/2, Z_TURN_B, true);
+  // ③ 出口縦ピース: x=+9.9, z=+2.0→B_EXT_Z_FAR（前方と同じ長さ）
+  addStrip(0.42, (B_EXT_Z_FAR-Z_TURN_B)+0.42, bwdExX, (Z_TURN_B+B_EXT_Z_FAR)/2, false);
+
+  // ═══════════════════════════════════════════════════════════
+  // 後ろS字出口セクション装飾 x∈[+6.6,+11.0] z∈[+5.3,+37.3]
+  // プレイヤーが振り返った際に「廊下が続いている」ように見せる
+  // ═══════════════════════════════════════════════════════════
+  const bExCenterX = (B_CONN_X_FAR + B_EXIT_X_FAR) / 2; // +8.8
+
+  // ═══ シーム整合 ═══
+  // 後方ワープは180°回転マッピング: メイン(x,z) ↔ 後方((8.8-x), (7.9-z))
+  // 切替前後で同じ視界になるよう、メイン廊下の装飾(z=-3.5看板, z=-5..-25ポスター,
+  // z=-7/-16/-24ドア, z=-4..フィクスチャ)を写像位置に複製配置する
+
+  // 天井照明（メインのz=-4,-10,-16,-22,-28 → 写像 11.9,17.9,23.9,29.9,35.9）
+  for(let bz = 11.9; bz < B_EXT_Z_FAR-2; bz+=6){
+    const bfx = new THREE.Mesh(new THREE.BoxGeometry(3.6,0.04,0.12), fxMat);
+    bfx.position.set(bExCenterX, CH-0.02, bz);
+    scene.add(bfx);
+  }
+
+  // 立体広告パネル（メインのz=-5,-10,-15,-20,-25 → 写像 12.9〜32.9、テクスチャ順も一致）
+  [12.9, 17.9, 22.9, 27.9, 32.9]
+    .forEach((bz, i) => {
+      addPosterPanel(B_EXIT_X_FAR,1.6,bz,-1,makePosterTex(i),false);
+    });
+
+  // 従業員入口ドア（メインのz=-7,-16,-24 → 写像 14.9,23.9,31.9、ラベルも一致）
+  placeDoor(B_CONN_X_FAR, 1.04, +1, 14.9, false, makeDoorTex('分電室'));
+  placeDoor(B_CONN_X_FAR, 1.04, +1, 23.9, false, makeDoorTex('従業員専用'));
+  placeDoor(B_CONN_X_FAR, 1.04, +1, 31.9, false, makeDoorTex('清掃員詰所'));
+
+  // 8番出口看板（メインのz=-3.5 → 写像 11.4：切替前後で看板までの距離4.1mが一致）
+  placeExitSign3D(bExCenterX, CH-0.19, 11.4, true, 0.18);
+
+  // ═══════════════════════════════════════════════════════════
+  // 前S字出口セクション装飾
+  // ジオメトリは EXIT_Z_FAR(-38.8) から -70.8 まで32m延伸済み
+  // 装飾も同じ範囲まで後ろS字と同様に配置
+  // ═══════════════════════════════════════════════════════════
+  const fExCenterX = (EXIT_X_FAR + CONN_X_FAR) / 2; // -8.8
+  const fExFarZ = EXIT_Z_FAR - 32.0; // -70.8 (buildCorridorと同じ延伸値)
+
+  // ═══ シーム整合 ═══
+  // 前方ワープは純平行移動マッピング: メイン(x,z) ↔ 前方((x-8.8), (z-36.6))
+  // メイン廊下の装飾を写像位置に複製 → 切替前後の視界が一致
+
+  // 天井照明（メインのz=-4,-10,-16,-22,-28 → 写像 -40.6,-46.6,-52.6,-58.6,-64.6）
+  for(let fz = -40.6; fz > fExFarZ + 1; fz -= 6){
+    const ffx = new THREE.Mesh(new THREE.BoxGeometry(3.6,0.04,0.12), fxMat);
+    ffx.position.set(fExCenterX, CH-0.02, fz);
+    scene.add(ffx);
+  }
+
+  // 黄色い誘導ストリップ延伸（EXIT_Z_FAR → fExFarZ の32m分）
+  {
+    const fExtStripLen = 32.0;
+    const fExtStripCZ = EXIT_Z_FAR - fExtStripLen / 2; // -54.8
+    addStrip(0.42, fExtStripLen, -9.9, fExtStripCZ, false);
+  }
+
+  // 立体広告パネル（メインのz=-5,-10,-15,-20,-25 → 写像 -41.6〜-61.6、テクスチャ順も一致）
+  [-41.6, -46.6, -51.6, -56.6, -61.6].forEach((fz, i) => {
+    addPosterPanel(EXIT_X_FAR,1.6,fz,+1,makePosterTex(i),false);
+  });
+
+  // 従業員入口ドア（メインのz=-7,-16,-24 → 写像 -43.6,-52.6,-60.6、ラベルも一致）
+  placeDoor(CONN_X_FAR, 1.04, -1, -43.6, false, makeDoorTex('分電室'));
+  placeDoor(CONN_X_FAR, 1.04, -1, -52.6, false, makeDoorTex('従業員専用'));
+  placeDoor(CONN_X_FAR, 1.04, -1, -60.6, false, makeDoorTex('清掃員詰所'));
+
+  // 8番出口看板（メインのz=-3.5 → 写像 -40.1：切替前後で看板までの距離4.1mが一致）
+  placeExitSign3D(fExCenterX, CH-0.19, -40.1, false, 0.30);
+}
+// ── NPC ───────────────────────────────────────────────
+function preloadNPC(){
+  if(typeof THREE.GLTFLoader==='undefined') return;
+  const loader=new THREE.GLTFLoader();
+  if(typeof MeshoptDecoder!=='undefined') loader.setMeshoptDecoder(MeshoptDecoder);
+  loader.load('./Untitled_small.glb', function(gltf){
+    // マテリアル調整（プリロード時に1回だけ実施）
+    gltf.scene.traverse(function(child){
+      if(child.isMesh||child.isSkinnedMesh){
+        child.castShadow=true; child.receiveShadow=true; child.frustumCulled=false;
+        if(child.material){
+          const mats=Array.isArray(child.material)?child.material:[child.material];
+          mats.forEach(function(m){
+            if(m.isMeshStandardMaterial){
+              m.roughness=1.0; m.metalness=0.0; m.envMapIntensity=0.0;
+              m.roughnessMap=null; m.metalnessMap=null; m.specularIntensityMap=null;
+            }
+            if(m.isMeshPhongMaterial){ m.shininess=0; m.specular.set(0x000000); }
+            m.needsUpdate=true;
+          });
+        }
+      }
+    });
+    // ルートモーション除去（プリロード時に1回だけ実施）
+    if(gltf.animations&&gltf.animations.length>0){
+      const clip=gltf.animations[0];
+      clip.tracks=clip.tracks.filter(function(t){ return !t.name.endsWith('.position'); });
+    }
+    gltfCache=gltf;
+    console.log('[NPC] プリロード完了');
+    // ゲーム開始後にプリロードが完了した場合はすぐNPCを配置
+    if(gameStarted&&!npcGroup) placeNPC();
+  }, undefined, function(err){ console.error('[NPC] プリロード失敗:', err); });
+}
+
+function placeNPC(){
+  if(npcGroup){ scene.remove(npcGroup); npcGroup=null; }
+  if(mixer){ mixer.stopAllAction(); mixer=null; }
+
+  if(!gltfCache){ console.warn('[NPC] プリロード未完了'); return; }
+
+  // WP0（前方出口セクション奥・死角）に生成
+  npcGroup=THREE.SkeletonUtils.clone(gltfCache.scene);
+  npcGroup.scale.setScalar(1.0);
+  npcGroup.position.set(NPC_PATH[0].x, 0, NPC_PATH[0].z);
+  npcGroup.rotation.y=0;
+  scene.add(npcGroup);
+
+  // WP1へ向かう状態で開始
+  npcWpIdx=1;
+  npcNatX=NPC_PATH[0].x;
+  npcSideOff=0; npcSideTgt=0;
+
+  mixer=new THREE.AnimationMixer(npcGroup);
+  if(gltfCache.animations&&gltfCache.animations.length>0){
+    mixer.clipAction(gltfCache.animations[0]).play();
+  }
+  if(currentAnomaly) applyAnomaly(currentAnomaly);
+}
+
+
+function animateNPC(dt){
+  if(!npcGroup) return;
+  const stop=(currentAnomaly==='npc_stop');
+
+  // ── waypointベース移動 ──────────────────────────────────────────
+  if(!stop){
+    const dest=NPC_PATH[npcWpIdx];
+    const pdx=dest.x-npcGroup.position.x;
+    const pdz=dest.z-npcGroup.position.z;
+
+    // ─ メイン通路セグメント（WP2→WP3）: Z方向のみ移動、X は横ずれに委ねる
+    if(npcWpIdx===3){
+      const distZ=Math.abs(pdz);
+      if(distZ<0.12){
+        npcGroup.position.z=dest.z;
+        npcWpIdx=4;                     // 次はWP4（後方S字横断）へ
+        npcNatX=NPC_PATH[3].x;          // -1.1
+        npcSideOff=0; npcSideTgt=0;
+      } else {
+        npcGroup.position.z+=Math.sign(pdz)*NPC_SPEED*dt;
+      }
+    } else {
+      // ─ 通常 2D waypoint 追従（S字クランク内・消滅区間）
+      const dist=Math.sqrt(pdx*pdx+pdz*pdz);
+      if(dist<0.12){
+        // waypointに到達
+        npcGroup.position.x=dest.x;
+        npcGroup.position.z=dest.z;
+
+        if(npcWpIdx>=NPC_PATH.length-1){
+          // ── WP5到達 → 死角で瞬間ワープしてWP0へ ──
+          npcGroup.visible=false;
+          npcGroup.position.set(NPC_PATH[0].x,0,NPC_PATH[0].z);
+          npcWpIdx=1;
+          npcNatX=NPC_PATH[0].x;
+          npcSideOff=0; npcSideTgt=0;
+          setTimeout(function(){
+            if(npcGroup&&currentAnomaly!=='npc_missing') npcGroup.visible=true;
+          },80);
+        } else {
+          npcWpIdx++;
+          // メイン通路に入る直前(WP2到達→WP3へ)にnpcNatXを誘導ブロックX=-1.1にセット
+          npcNatX=NPC_PATH[npcWpIdx-1].x;
+        }
+      } else {
+        // 目標waypoint方向へ移動
+        const step=Math.min(NPC_SPEED*dt,dist);
+        npcGroup.position.x+=(pdx/dist)*step;
+        npcGroup.position.z+=(pdz/dist)*step;
+      }
+    }
+
+    // ── 向き補間（移動方向へ滑らかに回転）─────────────────────────
+    // Math.atan2(-pdx, pdz): rotation.y=0がz+方向と一致する規則
+    //   +Z移動 → atan2(0,+)=0, +X移動 → atan2(-1,0)=-π/2（右折）, 等
+    const curDx=NPC_PATH[npcWpIdx].x-npcGroup.position.x;
+    const curDz=NPC_PATH[npcWpIdx].z-npcGroup.position.z;
+    if(Math.abs(curDx)+Math.abs(curDz)>0.01){
+      const targetRY=Math.atan2(curDx,curDz);  // 移動逆方向を向く（背中を見せる）
+      let diff=targetRY-npcGroup.rotation.y;
+      // [-π, π] に正規化
+      while(diff> Math.PI) diff-=2*Math.PI;
+      while(diff<-Math.PI) diff+=2*Math.PI;
+      npcGroup.rotation.y+=diff*Math.min(dt*8.0,1.0);
+    }
+  }
+
+  // ── 当たり判定＆横ずれ（メイン通路区間のみ）───────────────────
+  const inMain=(npcWpIdx===3&&npcGroup.visible);
+  if(!stop&&inMain){
+    const COLL_R=0.52;
+    const SIDE_AMT=0.55;
+    const cx=playerPos.x-(npcNatX+npcSideOff);
+    const cz=playerPos.z-npcGroup.position.z;
+    if(Math.abs(cz)<COLL_R&&Math.abs(cx)<COLL_R*1.3){
+      npcSideTgt=(cx>=0?-1:1)*SIDE_AMT;
+    } else {
+      npcSideTgt=0;
+    }
+    npcSideOff+=(npcSideTgt-npcSideOff)*Math.min(dt*4.5,0.5);
+    npcGroup.position.x=Math.max(-1.85,Math.min(1.85,npcNatX+npcSideOff));
+  } else if(!inMain){
+    npcSideOff=0; npcSideTgt=0;
+  }
+
+  // 横ずれ中は体を少し傾ける
+  npcGroup.rotation.z=-npcSideOff*0.15;
+
+  // ── AnimationMixer 更新（ルートモーション無効化）────────────────
+  if(mixer){
+    const sx=npcGroup.position.x;
+    const sy=npcGroup.position.y;
+    const sz=npcGroup.position.z;
+    mixer.timeScale=stop?0:1;
+    mixer.update(dt);
+    npcGroup.position.set(sx,sy,sz);
+  }
+}
+
+// ── LIGHTS ────────────────────────────────────────────
+function buildLights(){
+  const amb=new THREE.AmbientLight(0xc8d0e0,0.12);scene.add(amb);sceneLights.push(amb);
+  for(let z=-4;z>MAIN_Z_FAR;z-=6){
+    const pl=new THREE.PointLight(0xd8e4f8,0.32,14);
+    pl.castShadow=true;
+    pl.shadow.mapSize.width=256;  // 性能優先で小さめ
+    pl.shadow.mapSize.height=256;
+    pl.shadow.camera.near=0.1;
+    pl.shadow.camera.far=14;
+    pl.shadow.bias=-0.003;
+    pl.position.set(0,CH-0.05,z);scene.add(pl);sceneLights.push(pl);
+  }
+  const cl=new THREE.PointLight(0xd8e4f8,0.24,11);
+  cl.position.set(-5.5,CH-0.1,-32.2);scene.add(cl);sceneLights.push(cl);
+  const el=new THREE.PointLight(0xd8e4f8,0.28,12);
+  el.position.set(-8.8,CH-0.1,-36.6);scene.add(el);sceneLights.push(el);
+  // 前方延伸：メイン廊下ライト(z=-4,-10,-16)の写像位置(-40.6,-46.6,-52.6)に配置
+  const fl1=new THREE.PointLight(0xd8e4f8,0.30,13);
+  fl1.position.set(-8.8,CH-0.1,-40.6);scene.add(fl1);sceneLights.push(fl1);
+  const fl2=new THREE.PointLight(0xd8e4f8,0.26,12);
+  fl2.position.set(-8.8,CH-0.1,-46.6);scene.add(fl2);sceneLights.push(fl2);
+  const el2=new THREE.PointLight(0xd8e4f8,0.18,10);
+  el2.position.set(-8.8,CH-0.1,-52.6);scene.add(el2);sceneLights.push(el2);
+  // Backward connector + exit lights
+  const bl=new THREE.PointLight(0xd8e4f8,0.30,13);
+  bl.position.set(4.4,CH-0.1,3.1);scene.add(bl);sceneLights.push(bl);
+  // 後方出口セクション中央ライト（トリガー地点直近 — メイン廊下と同等の明るさ）
+  const belExit=new THREE.PointLight(0xd8e4f8,0.30,13);
+  belExit.position.set(8.8,CH-0.1,7.5);scene.add(belExit);sceneLights.push(belExit);
+  // 後方延伸：メイン廊下ライト(z=-4,-10,-16)の写像位置(11.9,17.9,23.9)に配置
+  const bl1=new THREE.PointLight(0xd8e4f8,0.30,13);
+  bl1.position.set(8.8,CH-0.1,11.9);scene.add(bl1);sceneLights.push(bl1);
+  const bl2=new THREE.PointLight(0xd8e4f8,0.26,12);
+  bl2.position.set(8.8,CH-0.1,17.9);scene.add(bl2);sceneLights.push(bl2);
+  const bel=new THREE.PointLight(0xd8e4f8,0.28,12);
+  bel.position.set(8.8,CH-0.1,23.9);scene.add(bel);sceneLights.push(bel);
+  // ── シームライト：S字クランクとメイン廊下の境界を自然につなぐ ──
+  // 廊下・遠端シームライト（前方S字出口から見えるメイン廊下入口を明るく）
+  const seamF=new THREE.PointLight(0xd8e4f8,0.28,12);
+  seamF.position.set(0,CH-0.05,MAIN_Z_FAR+1.0);scene.add(seamF);sceneLights.push(seamF);
+  // 廊下・近端シームライト（後方S字出口から見えるメイン廊下入口を明るく、かつテレポート直後の明るさを確保）
+  const seamN=new THREE.PointLight(0xd8e4f8,0.28,12);
+  seamN.position.set(0,CH-0.05,-0.5);scene.add(seamN);sceneLights.push(seamN);
+  origIntensities=sceneLights.map(l=>l.intensity);
+}
+
+// ── ANOMALIES ─────────────────────────────────────────
+// light_flicker removed – causes seizure-inducing strobe; replaced with extra NPC anomalies
+const ANOMALY_TYPES=['npc_missing','npc_facing','npc_huge','npc_stop',
+  'poster_missing','poster_flipped','poster_wrong','light_off','door_open','door_missing','npc_missing'];
+
+function clearAnomaly(){
+  flickerActive=false;
+  sceneLights.forEach((l,i)=>l.intensity=origIntensities[i]);
+  posterMeshes.forEach(m=>{m.visible=true;m.rotation.z=0;});
+  if(posterMeshes[2]&&_normalPosterTex2){posterMeshes[2].material.map=_normalPosterTex2;posterMeshes[2].material.needsUpdate=true;}
+  doorMeshes.forEach(m=>{m.visible=true;m.position.x=MAIN_X_R-0.02;});
+  if(npcGroup){npcGroup.visible=true;npcGroup.scale.setScalar(1.0);npcGroup.rotation.y=0;}
+}
+function applyAnomaly(type){
+  switch(type){
+    case 'npc_missing':  if(npcGroup) npcGroup.visible=false;break;
+    case 'npc_facing':   if(npcGroup) npcGroup.rotation.y=Math.PI;break; // 異変：後ろ向き
+    case 'npc_huge':     if(npcGroup) npcGroup.scale.setScalar(2.0);break; // 通常1.0の2倍
+    case 'npc_stop':     break;
+    case 'poster_missing': if(posterMeshes[2]) posterMeshes[2].visible=false;break;
+    case 'poster_wrong':
+      if(posterMeshes[2]){
+        if(!_normalPosterTex2) _normalPosterTex2=posterMeshes[2].material.map;
+        posterMeshes[2].material.map=makePosterTexWrong();
+        posterMeshes[2].material.needsUpdate=true;
+      }break;
+    case 'poster_flipped': if(posterMeshes[1]) posterMeshes[1].rotation.z=Math.PI;break;
+    case 'light_off':
+      // Dim corridor lights to 15% – noticeable but not a jarring black flash
+      for(let i=1;i<Math.min(4,sceneLights.length);i++)
+        sceneLights[i].intensity=origIntensities[i]*0.15;break;
+    case 'door_open':   if(doorMeshes[0]) doorMeshes[0].position.x=MAIN_X_R+0.55;break;
+    case 'door_missing':if(doorMeshes[1]) doorMeshes[1].visible=false;break;
+  }
+}
+function updateFlicker(dt){ /* light_flicker anomaly removed */ }
+// ── COLLISION ────────────────────────────────────────
+function clampPlayer(){
+  let x=playerPos.x, z=playerPos.z;
+  if(z<CONN_Z_FAR){
+    // Forward exit section
+    x=Math.max(EXIT_X_FAR+0.12,Math.min(CONN_X_FAR-0.12,x));
+    z=Math.max(EXIT_Z_FAR+0.1,Math.min(CONN_Z_FAR-0.05,z));
+  }else if(z<MAIN_Z_FAR){
+    // Forward connector
+    x=Math.max(EXIT_X_FAR+0.12,Math.min(MAIN_X_R-0.12,x));
+    z=Math.max(CONN_Z_FAR+0.05,Math.min(MAIN_Z_FAR-0.05,z));
+  }else if(z<=MAIN_Z_NEAR){
+    // Main corridor
+    x=Math.max(MAIN_X_L+0.12,Math.min(MAIN_X_R-0.12,x));
+    z=Math.max(MAIN_Z_FAR+0.05,Math.min(MAIN_Z_NEAR,z));
+  }else if(z<=B_CONN_Z_FAR){
+    // Backward connector
+    x=Math.max(MAIN_X_L+0.12,Math.min(B_EXIT_X_FAR-0.12,x));
+    z=Math.max(MAIN_Z_NEAR+0.01,z);
+    if(x<B_CONN_X_FAR-0.12) z=Math.min(B_CONN_Z_FAR-0.05,z);
+  }else if(z<=B_EXIT_Z_FAR){
+    // Backward exit section
+    x=Math.max(B_CONN_X_FAR+0.12,Math.min(B_EXIT_X_FAR-0.12,x));
+    z=Math.max(B_CONN_Z_FAR+0.05,Math.min(B_EXIT_Z_FAR-0.1,z));
+  }else{
+    playerPos.set(0,PH,MAIN_Z_NEAR-0.3);return;
+  }
+  playerPos.x=x;playerPos.z=z;
+}
+
+// ── GAME EVENTS ──────────────────────────────────────
+function onReachedExit(){
+  // 前S字通過：純粋な平行移動（Δx=+8.8, トリガー面の超過距離を保持）
+  // yaw/pitch/headBob は一切触らない → 同一フレーム内ワープで完全に無感知
+  const ok=(currentAnomaly===null);
+  const overZ=playerPos.z-TP_Z; // ≤0（トリガー面を越えた分の慣性）
+  const mappedX=Math.max(MAIN_X_L+0.15, Math.min(MAIN_X_R-0.15, playerPos.x+8.8));
+  playerPos.set(mappedX,PH,(MAIN_Z_NEAR-0.3)+overZ);
+  if(ok){exitCount++;if(exitCount>=MAX_EXITS){doWin();return;}}
+  else exitCount=0;
+  updateHUD();startRound();
+}
+function onTurnedBack(){
+  // 後S字通過：180°回転＋平行移動（後方出口廊下→メイン廊下を剛体マッピング）
+  // 進行方向に対する左右関係・視点・慣性をすべて保持 → カメラスナップなし
+  const ok=(currentAnomaly!==null);
+  const overZ=playerPos.z-B_TP_Z; // ≥0
+  const mappedX=Math.max(MAIN_X_L+0.15, Math.min(MAIN_X_R-0.15, 8.8-playerPos.x));
+  playerPos.set(mappedX,PH,(MAIN_Z_NEAR-0.3)-overZ);
+  yaw+=Math.PI;                       // 世界が180°入れ替わる分、視線も回転（見た目は不変）
+  if(yaw>Math.PI*2) yaw-=Math.PI*2;
+  if(ok){exitCount++;if(exitCount>=MAX_EXITS){doWin();return;}}
+  else exitCount=0;
+  updateHUD();startRound();
+}
+function startRound(){
+  clearAnomaly();
+  if(!npcGroup && gltfCache){
+    // 初回のみ配置
+    placeNPC();
+  } else if(npcGroup){
+    // ラウンド切替と同一フレームでNPCをWP0へリセット
+    // （WP0はプレイヤーから約31m＝フォグ外なので、隠すタイマーは不要）
+    npcGroup.position.set(NPC_PATH[0].x, 0, NPC_PATH[0].z);
+    npcGroup.rotation.y=0; npcGroup.rotation.z=0;
+    npcWpIdx=1;
+    npcNatX=NPC_PATH[0].x;
+    npcSideOff=0; npcSideTgt=0;
+  }
+  // 異変はワープと同一フレームで即適用（遅延適用によるポップイン防止）
+  currentAnomaly=null;
+  if(Math.random()<0.5){
+    currentAnomaly=ANOMALY_TYPES[Math.floor(Math.random()*ANOMALY_TYPES.length)];
+    applyAnomaly(currentAnomaly);
+  }
+  if(npcGroup) npcGroup.visible=(currentAnomaly!=='npc_missing');
+}
+function updateHUD(){exitCounter.textContent=`出口： ${exitCount} / ${MAX_EXITS}`;}
+function doWin(){gameOver=true;winScreen.style.display='flex';if(document.pointerLockElement)document.exitPointerLock();}
+
+// ── AUDIO ────────────────────────────────────────────
+let audioCtx=null,footTimer=0;
+function playStep(dt){
+  footTimer+=dt;if(footTimer<0.4) return;footTimer=0;
+  try{
+    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const b=audioCtx.createBuffer(1,Math.floor(audioCtx.sampleRate*0.055),audioCtx.sampleRate);
+    const d=b.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.25));
+    const s=audioCtx.createBufferSource();s.buffer=b;
+    const g=audioCtx.createGain();g.gain.value=0.12;
+    s.connect(g);g.connect(audioCtx.destination);s.start();
+  }catch(e){}
+}
+
+// ── INPUT ────────────────────────────────────────────
+function setupInput(){
+  document.addEventListener('keydown',e=>keys[e.code]=true);
+  document.addEventListener('keyup',  e=>keys[e.code]=false);
+  document.addEventListener('mousemove',e=>{
+    if(!document.pointerLockElement) return;
+    yaw  -=e.movementX*0.002;
+    pitch-=e.movementY*0.002;
+    pitch=Math.max(-Math.PI/3,Math.min(Math.PI/3,pitch));
+  });
+  if(!isMobile){
+    renderer.domElement.addEventListener('click',()=>{
+      if(!document.pointerLockElement) renderer.domElement.requestPointerLock();
+    });
+  }
+  if(isMobile) setupMobileInput();
+}
+
+function setupMobileInput(){
+  // Update overlay instruction text for mobile
+  const it=document.getElementById('instrText');
+  if(it) it.textContent='左：移動　右：視点操作';
+
+  const jZone=document.getElementById('joystickZone');
+  const knob =document.getElementById('joystickKnob');
+  const lZone=document.getElementById('lookZone');
+
+  // ── Joystick (movement) ──
+  jZone.addEventListener('touchstart',e=>{
+    e.preventDefault();
+    const t=e.changedTouches[0];
+    joyActive=true; joyId=t.identifier;
+    joyOriX=t.clientX; joyOriY=t.clientY; joyDX=0; joyDY=0;
+  },{passive:false});
+  jZone.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier!==joyId) continue;
+      const dx=t.clientX-joyOriX, dy=t.clientY-joyOriY;
+      const dist=Math.hypot(dx,dy);
+      const cl=Math.min(dist,JOY_MAX);
+      const ang=Math.atan2(dy,dx);
+      joyDX=Math.cos(ang)*cl/JOY_MAX;
+      joyDY=Math.sin(ang)*cl/JOY_MAX;
+      knob.style.left=(39+joyDX*JOY_MAX)+'px';
+      knob.style.top =(39+joyDY*JOY_MAX)+'px';
+    }
+  },{passive:false});
+  jZone.addEventListener('touchend',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier!==joyId) continue;
+      joyActive=false; joyDX=0; joyDY=0;
+      knob.style.left='39px'; knob.style.top='39px';
+    }
+  },{passive:false});
+  jZone.addEventListener('touchcancel',e=>{
+    joyActive=false; joyDX=0; joyDY=0;
+    knob.style.left='39px'; knob.style.top='39px';
+  });
+
+  // ── Look-drag (camera) ──
+  lZone.addEventListener('touchstart',e=>{
+    e.preventDefault();
+    const t=e.changedTouches[0];
+    lookActive=true; lookId=t.identifier;
+    lookPX=t.clientX; lookPY=t.clientY;
+  },{passive:false});
+  lZone.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier!==lookId) continue;
+      yaw  -=(t.clientX-lookPX)*0.005;
+      pitch-=(t.clientY-lookPY)*0.005;
+      pitch=Math.max(-Math.PI/3,Math.min(Math.PI/3,pitch));
+      lookPX=t.clientX; lookPY=t.clientY;
+    }
+  },{passive:false});
+  lZone.addEventListener('touchend',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      if(t.identifier!==lookId) continue;
+      lookActive=false;
+    }
+  },{passive:false});
+  lZone.addEventListener('touchcancel',()=>{ lookActive=false; });
+}
+
+// ── UPDATE ───────────────────────────────────────────
+function update(dt){
+  if(gameOver) return;
+  const fwd  =new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
+  const right=new THREE.Vector3( Math.cos(yaw),0,-Math.sin(yaw));
+  const sp=PSPEED*dt;let mv=false;
+  if(keys['KeyW']||keys['ArrowUp'])   {playerPos.addScaledVector(fwd, sp);mv=true;}
+  if(keys['KeyS']||keys['ArrowDown']) {playerPos.addScaledVector(fwd,-sp);mv=true;}
+  if(keys['KeyA']||keys['ArrowLeft']) {playerPos.addScaledVector(right,-sp);mv=true;}
+  if(keys['KeyD']||keys['ArrowRight']){playerPos.addScaledVector(right, sp);mv=true;}
+  if(isMobile&&joyActive&&(joyDX!==0||joyDY!==0)){
+    playerPos.addScaledVector(fwd,-joyDY*sp);
+    playerPos.addScaledVector(right,joyDX*sp);
+    mv=true;
+  }
+  clampPlayer();
+  // ── シームレス境界判定（カメラ更新前に実行 → 越境フレームから新空間で描画）──
+  if(playerPos.z>=B_TP_Z&&playerPos.x>=B_TP_X) onTurnedBack();      // 後方S字通過
+  else if(playerPos.z<=TP_Z&&playerPos.x<=TP_X) onReachedExit();    // 前方S字通過
+  if(gameOver) return;
+  if(mv){headBobT+=dt*8;headBob=Math.sin(headBobT)*0.04;playStep(dt);}
+  else headBob*=0.85;
+  camera.position.set(playerPos.x,playerPos.y+headBob,playerPos.z);
+  camera.rotation.order='YXZ';
+  camera.rotation.y=yaw;
+  camera.rotation.x=pitch;
+  animateNPC(dt);updateFlicker(dt);
+}
+
+// ── INIT ─────────────────────────────────────────────
+function initThree(){
+  scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x0a0d12);
+  scene.fog=new THREE.Fog(0x0a0d12,8,28);
+  camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.05,80);
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.outputEncoding=THREE.sRGBEncoding;
+  renderer.shadowMap.enabled=true;
+  renderer.shadowMap.type=THREE.PCFSoftShadowMap; // 柔らかい影
+  document.body.appendChild(renderer.domElement);
+  clock=new THREE.Clock();
+  playerPos=new THREE.Vector3(0,PH,MAIN_Z_NEAR-0.3);
+  camera.position.copy(playerPos);
+  scene.add(buildCorridor());
+  buildLights();
+  addDecorations();
+  preloadNPC(); // タイトル画面表示中にバックグラウンドでGLBをプリロード
+  window.addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+  });
+}
+function animate(){
+  if(animRunning) return;animRunning=true;
+  (function loop(){
+    requestAnimationFrame(loop);
+    const dt=Math.min(clock.getDelta(),0.05);
+    if(document.pointerLockElement||isMobile) update(dt);
+    renderer.render(scene,camera);
+  })();
+}
+
+document.getElementById('startBtn').addEventListener('click',()=>{
+  overlay.style.display='none';
+  exitCounter.style.display='block';
+  if(isMobile){
+    document.getElementById('mobileControls').style.display='block';
+    // crosshair not useful on mobile
+  } else {
+    crosshair.style.display='block';
+    renderer.domElement.requestPointerLock();
+  }
+  gameStarted=true;
+  startRound();updateHUD();
+});
+
+initThree();setupInput();
+// Pre-render while overlay is still showing – warms the GPU so first visible frame
+// does not flash from a cold WebGL context
+renderer.render(scene,camera);
+animate();
+</script>
+</body>
+</html>
+       
