@@ -1,6 +1,6 @@
-const CACHE = 'exit8-v1';
+const CACHE = 'exit8-v2';
 const ASSETS = [
-  './exit8.html',
+  './index.html',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
