@@ -13,6 +13,13 @@
     <link rel="apple-touch-icon" href="icon-180.png">
     <meta name="msapplication-TileImage" content="icon-144.png">
     <meta name="msapplication-TileColor" content="#F5C800">
+    <script>
+      (function(){
+        var sa=window.navigator.standalone===true;
+        var mfs=window.matchMedia&&(window.matchMedia('(display-mode: fullscreen)').matches||window.matchMedia('(display-mode: standalone)').matches);
+        if(sa||mfs){try{sessionStorage.setItem('exit8_pwa','1');}catch(e){}}
+      })();
+    </script>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 
         <!-- do not cache this page -->
